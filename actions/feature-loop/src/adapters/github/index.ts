@@ -11,3 +11,4 @@ export * from './api.js';
 export * from './errors.js';
 export * from './status-comment.js';
 export * from './repository-adapter.js';
+export * from './octokit-api.js';
