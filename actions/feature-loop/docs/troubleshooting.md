@@ -122,7 +122,7 @@ For each situation: symptom → cause → fix → verify (run a dry run, then re
   re-run.
 
 > The loop automatically reconciles **stale** labels on **closed** sub-issues
-> (for example a closed issue still carrying a running label is normalized to
+> (for example a closed issue still carrying an `in-progress` label is normalized to
 > `done` or `not-planned`). Contradictory labels on **open** issues require the
 > manual repair above.
 
