@@ -5,17 +5,21 @@ sub-issues, assigning exactly one issue at a time to the GitHub Copilot coding
 agent. The loop remains human-gated: a human reviews and merges every pull
 request before the next issue starts.
 
-> **Status:** Adapter, preflight, and trusted merged-PR resolution implemented;
-> controller orchestration and the Octokit transport are not yet wired in. The
-> action entry point currently reports that Feature Loop is not yet implemented
-> and exits successfully. The reusable contracts (configuration, domain types,
-> state model, and ports) are defined under `src/` and exported from
-> `src/contracts.ts`; the GitHub repository adapter and preflight live under
-> `src/adapters/github/` and `src/preflight/`. See
+> **Status:** Adapter, preflight, trusted merged-PR resolution, the GitHub
+> Copilot agent provider, and the transactional controller orchestration are
+> implemented; only the Octokit transport binding and consumer workflow packaging
+> are not yet wired in. The action entry point currently reports that Feature Loop
+> is not yet implemented and exits successfully. The reusable contracts
+> (configuration, domain types, state model, and ports) are defined under `src/`
+> and exported from `src/contracts.ts`; the GitHub repository adapter and
+> preflight live under `src/adapters/github/` and `src/preflight/`, and the
+> controller lives under `src/orchestrator/`. See
 > [`docs/adr/0001-feature-loop-contracts.md`](docs/adr/0001-feature-loop-contracts.md),
 > [`docs/adr/0002-github-repository-adapter-and-preflight.md`](docs/adr/0002-github-repository-adapter-and-preflight.md),
+> [`docs/adr/0003-trusted-merged-pr-resolution.md`](docs/adr/0003-trusted-merged-pr-resolution.md),
+> [`docs/adr/0004-github-copilot-agent-provider.md`](docs/adr/0004-github-copilot-agent-provider.md),
 > and
-> [`docs/adr/0003-trusted-merged-pr-resolution.md`](docs/adr/0003-trusted-merged-pr-resolution.md).
+> [`docs/adr/0005-transactional-orchestration-and-reconciliation.md`](docs/adr/0005-transactional-orchestration-and-reconciliation.md).
 
 ## Configuration
 

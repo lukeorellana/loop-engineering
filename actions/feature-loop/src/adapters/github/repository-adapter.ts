@@ -101,10 +101,41 @@ export class GitHubRepositoryAdapter implements GitHubRepositoryPort {
       return null;
     }
     const subNumbers = await this.getNativeSubIssueNumbers(epicNumber);
+    const subIssues = await this.buildSubIssues(subNumbers);
+    return {
+      number: epicIssue.number,
+      title: epicIssue.title,
+      open: epicIssue.open,
+      subIssues,
+    };
+  }
+
+  async getEpicWithSubIssues(
+    epicNumber: number,
+    orderedSubIssueNumbers: readonly number[],
+  ): Promise<Epic | null> {
+    const epicIssue = await this.run('get epic', () =>
+      this.api.getIssue(epicNumber),
+    );
+    if (epicIssue === null) {
+      return null;
+    }
+    const subIssues = await this.buildSubIssues(orderedSubIssueNumbers);
+    return {
+      number: epicIssue.number,
+      title: epicIssue.title,
+      open: epicIssue.open,
+      subIssues,
+    };
+  }
+
+  private async buildSubIssues(
+    orderedSubIssueNumbers: readonly number[],
+  ): Promise<SubIssue[]> {
     const subIssues: SubIssue[] = [];
-    for (let index = 0; index < subNumbers.length; index += 1) {
+    for (const subNumber of orderedSubIssueNumbers) {
       const issue = await this.run('get sub-issue', () =>
-        this.api.getIssue(subNumbers[index]),
+        this.api.getIssue(subNumber),
       );
       if (issue === null) {
         continue;
@@ -127,12 +158,7 @@ export class GitHubRepositoryAdapter implements GitHubRepositoryPort {
         canonicalStateLabels: resolved.canonicalStateLabels,
       });
     }
-    return {
-      number: epicIssue.number,
-      title: epicIssue.title,
-      open: epicIssue.open,
-      subIssues,
-    };
+    return subIssues;
   }
 
   async getNativeSubIssueNumbers(
@@ -270,6 +296,19 @@ export class GitHubRepositoryAdapter implements GitHubRepositoryPort {
 
   async createLabel(name: string): Promise<void> {
     await this.run('create label', () => this.api.createLabel(name));
+  }
+
+  async getStatusComment(
+    issueNumber: number,
+    marker: string,
+  ): Promise<string | null> {
+    const comments = await this.collectAll('list issue comments', (page) =>
+      this.api.listIssueComments(issueNumber, page),
+    );
+    const existing = comments
+      .filter((comment) => hasStatusMarker(comment.body, marker))
+      .at(-1);
+    return existing?.body ?? null;
   }
 
   async upsertStatusComment(

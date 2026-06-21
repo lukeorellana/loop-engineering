@@ -81,6 +81,29 @@ export class FakeGitHubApi implements GitHubApi {
     return this.config.pageSize ?? 100;
   }
 
+  // Comments are stateful so that listing reflects created/updated comments
+  // within a run, exercising status-comment upsert/dedupe end to end.
+  private commentStore: Map<number, ApiComment[]> | null = null;
+  private nextCommentId = 1_000_000;
+
+  private comments(issueNumber: number): ApiComment[] {
+    if (this.commentStore === null) {
+      this.commentStore = new Map();
+      for (const [key, list] of Object.entries(this.config.comments ?? {})) {
+        this.commentStore.set(
+          Number(key),
+          list.map((comment) => ({ ...comment })),
+        );
+      }
+    }
+    let list = this.commentStore.get(issueNumber);
+    if (list === undefined) {
+      list = [];
+      this.commentStore.set(issueNumber, list);
+    }
+    return list;
+  }
+
   async getRepository(): Promise<ApiRepository> {
     this.record('getRepository');
     return {
@@ -192,18 +215,27 @@ export class FakeGitHubApi implements GitHubApi {
     page: number,
   ): Promise<ApiPage<ApiComment>> {
     this.record('listIssueComments', issueNumber, page);
-    const comments = this.config.comments?.[issueNumber] ?? [];
-    return paginate(comments, this.pageSize)(page);
+    return paginate(this.comments(issueNumber), this.pageSize)(page);
   }
 
   async createComment(issueNumber: number, body: string): Promise<void> {
     this.record('createComment', issueNumber, body);
     this.createdComments.push({ issue: issueNumber, body });
+    this.comments(issueNumber).push({ id: (this.nextCommentId += 1), body });
   }
 
   async updateComment(commentId: number, body: string): Promise<void> {
     this.record('updateComment', commentId, body);
     this.updatedComments.push({ id: commentId, body });
+    if (this.commentStore !== null) {
+      for (const list of this.commentStore.values()) {
+        const index = list.findIndex((comment) => comment.id === commentId);
+        if (index !== -1) {
+          list[index] = { id: commentId, body };
+          break;
+        }
+      }
+    }
   }
 }
 
