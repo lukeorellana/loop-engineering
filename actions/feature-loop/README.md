@@ -20,6 +20,33 @@ request before the next issue starts.
 > and
 > [`docs/adr/0005-transactional-orchestration-and-reconciliation.md`](docs/adr/0005-transactional-orchestration-and-reconciliation.md).
 
+## Documentation
+
+Adopt and operate Feature Loop without reading its source:
+
+- [Setup guide](docs/setup.md) — clean-room adoption, step by step.
+- [Configuration reference](docs/configuration.md) — every input, output,
+  configuration field, outcome, and reason code.
+- [Security model](docs/security.md) — trust boundaries, permissions, tokens,
+  pinning, and what this version does and does not guarantee.
+- [Troubleshooting & recovery runbook](docs/troubleshooting.md) — recover from
+  every pause and failure.
+- [LingoQuest migration guide](docs/migration-lingoquest.md) — a reversible
+  rollout from an existing custom controller.
+
+Copy-ready templates and examples live under [`examples/`](examples):
+
+- [`feature-loop.yml`](examples/feature-loop.yml) — annotated configuration.
+- [`feature-loop.custom-labels.yml`](examples/feature-loop.custom-labels.yml) —
+  customized canonical-state labels.
+- [`feature-loop.workflow.yml`](examples/feature-loop.workflow.yml) — reference
+  consumer workflow.
+- [`ISSUE_TEMPLATE/feature-epic.md`](examples/ISSUE_TEMPLATE/feature-epic.md) and
+  [`ISSUE_TEMPLATE/feature-sub-issue.md`](examples/ISSUE_TEMPLATE/feature-sub-issue.md)
+  — epic and sub-issue templates.
+- [`copilot-instructions.md`](examples/copilot-instructions.md) — agent
+  instruction template.
+
 ## Configuration
 
 Feature Loop reads a versioned `.github/feature-loop.yml` from the repository
