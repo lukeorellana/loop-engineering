@@ -198,6 +198,49 @@ describe('runFeatureLoop — merged pull-request continuation', () => {
     );
   });
 
+  it('resolves completion from the authoritative re-read, not the event payload', async () => {
+    // The delivered webhook payload carries no closing information at all, but
+    // the repository's authoritative pull request closes issue #11. The loop
+    // must re-read the pull request and continue to the next issue.
+    const { result, provider } = await run({
+      config: epicConfig(
+        [closedDone(11, [labels.done]), fakeIssue({ number: 12 })],
+        {
+          pulls: {
+            20: {
+              number: 20,
+              merged: true,
+              mergedBy: 'octocat',
+              baseRef: 'main',
+              headRef: 'feature',
+              body: 'Closes #11',
+              closesIssueNumbers: [11],
+            },
+          },
+        },
+      ),
+      request: {
+        event: {
+          name: 'pull_request',
+          action: 'closed',
+          pullRequest: {
+            number: 20,
+            merged: true,
+            baseRef: 'main',
+            headRef: 'feature',
+            body: null,
+            closingIssueReferences: [],
+          },
+        },
+        dryRun: false,
+      },
+    });
+
+    expect(result.outcome).toBe('started');
+    expect(result.issueNumber).toBe(12);
+    expect(provider.startRequests[0].issue.number).toBe(12);
+  });
+
   it('no-ops for an unmerged pull request', async () => {
     const config = epicConfig([fakeIssue({ number: 11 })]);
     const { result } = await run({
@@ -325,6 +368,30 @@ describe('runFeatureLoop — assignment outcomes', () => {
     });
     expect(result.outcome).toBe('needs-human');
     expect(result.reasonCode).toBe('assignment-failed');
+  });
+
+  it('leaves a recoverable needs-human state when the provider throws', async () => {
+    const { result, api } = await run({
+      config: epicConfig([fakeIssue({ number: 11 })]),
+      provider: {
+        startResult: () => {
+          throw new Error('transport exploded');
+        },
+      },
+      request: manual,
+    });
+    expect(result.outcome).toBe('needs-human');
+    expect(result.reasonCode).toBe('assignment-failed');
+    expect(api.addedLabels).toContainEqual({
+      issue: 11,
+      labels: [labels['needs-human']],
+    });
+    // The raw provider error stays out of the sanitized comment.
+    const bodies = [
+      ...api.createdComments.map((c) => c.body),
+      ...api.updatedComments.map((c) => c.body),
+    ].join('\n');
+    expect(bodies).not.toContain('transport exploded');
   });
 });
 

@@ -180,7 +180,14 @@ class Controller {
     if (resolved.kind === 'manual') {
       this.epicNumber = resolved.epicNumber;
     } else {
-      mergedPr = resolved.event.pullRequest;
+      // Re-read the authoritative merged pull request from the repository so the
+      // trusted resolver reconciles closing keywords against GitHub's
+      // authoritative closingIssuesReferences rather than the (possibly
+      // incomplete) webhook payload. Fall back to the delivered payload only when
+      // the repository has no record of the pull request.
+      const eventPr = resolved.event.pullRequest;
+      mergedPr =
+        (await this.repository.getMergedPullRequest(eventPr.number)) ?? eventPr;
       const epicNumber = await this.resolveEpicForPullRequest(info, mergedPr);
       if (epicNumber === null) {
         this.logger.info('Feature Loop: merged pull request has no epic', {
@@ -394,6 +401,19 @@ class Controller {
     const issue = decision.issue;
     const request = decision.request;
 
+    // Multiple linked pull requests pause the loop before any assignment, even
+    // when the provider is already assigned: the ambiguity needs a human.
+    const linked = await this.repository.getLinkedPullRequestNumbers(
+      issue.number,
+    );
+    if (linked.length > 1) {
+      return this.pauseRunningIssue(
+        issue,
+        'multiple-linked-pull-requests',
+        `Issue #${issue.number} has ${linked.length} linked pull requests; resolve the ambiguity before the loop continues.`,
+      );
+    }
+
     // Idempotency: the provider may already be assigned (manual rerun, replay).
     if (await this.provider.isAlreadyStarted(request)) {
       await this.repository.setCanonicalState(
@@ -410,18 +430,6 @@ class Controller {
       return this.runningResult('already-running', 'already-running', issue);
     }
 
-    // Multiple linked pull requests pause the loop before any assignment.
-    const linked = await this.repository.getLinkedPullRequestNumbers(
-      issue.number,
-    );
-    if (linked.length > 1) {
-      return this.pauseRunningIssue(
-        issue,
-        'multiple-linked-pull-requests',
-        `Issue #${issue.number} has ${linked.length} linked pull requests; resolve the ambiguity before the loop continues.`,
-      );
-    }
-
     // Mutate: set the canonical running state and post scoped instructions.
     const startedAt = this.clock.now().toISOString();
     await this.repository.setCanonicalState(
@@ -430,8 +438,22 @@ class Controller {
     );
     await this.postRunning(issue, startedAt);
 
-    // 10. Start the coding-agent provider.
-    const result = await this.provider.startAgent(request);
+    // 10. Start the coding-agent provider. A thrown error is treated as a failed
+    // assignment so the issue is left in a recoverable `needs-human` state.
+    let result: Awaited<ReturnType<AgentProviderPort['startAgent']>>;
+    try {
+      result = await this.provider.startAgent(request);
+    } catch (error) {
+      this.logger.error('Feature Loop: assignment threw', {
+        issue: issue.number,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return this.pauseRunningIssue(
+        issue,
+        'assignment-failed',
+        `The coding agent could not be assigned to issue #${issue.number}. A human can resume the loop.`,
+      );
+    }
 
     // 11. Verify the assignment and persist the final status.
     switch (result.status) {
