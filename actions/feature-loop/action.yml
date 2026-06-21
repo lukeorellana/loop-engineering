@@ -4,6 +4,56 @@ author: 'lukeorellana'
 branding:
   icon: 'refresh-cw'
   color: 'purple'
+inputs:
+  github-token:
+    description: >-
+      Token used for repository reads and writes (issues, labels, comments). The
+      workflow-provided GITHUB_TOKEN is sufficient for repository operations.
+    required: true
+    default: ${{ github.token }}
+  agent-token:
+    description: >-
+      Token used to assign the GitHub Copilot coding agent. Defaults to
+      github-token when omitted. Provide a separate credential when coding-agent
+      assignment requires permissions beyond the repository token.
+    required: false
+    default: ''
+  epic-issue:
+    description: >-
+      The epic issue number to advance on a manual start. Required for
+      workflow_dispatch; ignored for a merged pull-request continuation, where
+      the epic is derived from the closed sub-issue.
+    required: false
+    default: ''
+  dry-run:
+    description: >-
+      When true, evaluate the epic and report what would happen without
+      performing any comments, labels, assignments, or issue updates.
+    required: false
+    default: 'false'
+  config-path:
+    description: >-
+      Path to the Feature Loop configuration file on the repository default
+      branch. Defaults to .github/feature-loop.yml.
+    required: false
+    default: ''
+outputs:
+  outcome:
+    description: >-
+      The coarse-grained result: started, already-running, complete,
+      needs-human, dry-run, no-op, configuration-error, or operational-error.
+  epic-issue:
+    description: 'The epic issue number the loop acted on, when resolved.'
+  active-issue:
+    description: >-
+      The sub-issue the loop is driving (started, running, or paused), when one
+      applies.
+  completed-issue:
+    description: >-
+      The sub-issue completed from a trusted merged pull request during this
+      run, when one was completed.
+  reason:
+    description: 'A stable, machine-readable reason code for the outcome.'
 runs:
   using: 'node20'
   main: 'dist/index.js'

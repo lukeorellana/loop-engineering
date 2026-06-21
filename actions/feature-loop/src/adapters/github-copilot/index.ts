@@ -12,3 +12,4 @@ export * from './api.js';
 export * from './actors.js';
 export * from './errors.js';
 export * from './provider.js';
+export * from './octokit-api.js';

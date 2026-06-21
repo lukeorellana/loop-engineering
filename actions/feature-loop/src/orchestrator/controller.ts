@@ -79,7 +79,14 @@ export interface OrchestratorResult {
   readonly reasonCode: string;
   readonly dryRun: boolean;
   readonly epicNumber?: number;
+  /** The sub-issue the loop is acting on (started, running, or paused). */
   readonly issueNumber?: number;
+  /**
+   * The sub-issue completed during this iteration from a trusted merged pull
+   * request, when one was completed. Independent of {@link issueNumber}, which
+   * is the issue the loop continues to act on after the completion.
+   */
+  readonly completedIssueNumber?: number;
   readonly details: readonly string[];
 }
 
@@ -149,6 +156,9 @@ class Controller {
   private issues!: readonly number[];
   private evaluation!: LoopEvaluation;
 
+  // Set when a trusted merged pull request completes a prior sub-issue.
+  private completedIssueNumber?: number;
+
   constructor(input: OrchestratorInput) {
     // Dry-run uses a read-only repository view so the zero-write invariant holds
     // by construction, even for code paths without an explicit dry-run guard.
@@ -164,6 +174,20 @@ class Controller {
   }
 
   async run(): Promise<OrchestratorResult> {
+    const result = await this.runLoop();
+    // Surface the issue completed from a trusted merged pull request on every
+    // exit path that continued past the completion (start, already-running,
+    // complete, no-op, or pause), without overwriting an explicit value.
+    if (
+      this.completedIssueNumber !== undefined &&
+      result.completedIssueNumber === undefined
+    ) {
+      return { ...result, completedIssueNumber: this.completedIssueNumber };
+    }
+    return result;
+  }
+
+  private async runLoop(): Promise<OrchestratorResult> {
     // 1. Resolve and validate the event context.
     const resolved = resolveEvent(this.event);
     if (resolved.kind === 'unrelated') {
@@ -389,6 +413,7 @@ class Controller {
       pullRequest: pullRequest.number,
       alreadyComplete: prep.alreadyComplete,
     });
+    this.completedIssueNumber = prep.issueNumber;
     return null;
   }
 

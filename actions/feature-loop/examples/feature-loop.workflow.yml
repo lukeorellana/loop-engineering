@@ -1,0 +1,69 @@
+# Reference consumer workflow for the Feature Loop action.
+#
+# Copy this file into a repository as `.github/workflows/feature-loop.yml`. It
+# advances a feature epic one sub-issue at a time:
+#
+# - `workflow_dispatch` starts (or re-runs) the loop for a chosen epic.
+# - `pull_request: closed` continues the loop after a human merges a pull
+#   request, and is ignored when the pull request is closed without merging.
+#
+# The action never checks out or executes repository or pull-request code, so
+# this workflow deliberately has no `actions/checkout` step.
+name: Feature Loop
+
+on:
+  workflow_dispatch:
+    inputs:
+      epic-issue:
+        description: 'Epic issue number to advance'
+        required: true
+        type: number
+      dry-run:
+        description: 'Evaluate only; perform no writes'
+        required: false
+        default: false
+        type: boolean
+  pull_request:
+    types: [closed]
+
+# Serialize every controller event repository-wide so concurrent triggers queue
+# instead of racing. `cancel-in-progress: false` queues runs (it never cancels a
+# running controller), which is equivalent to the intended contract:
+#
+#   concurrency:
+#     group: feature-loop-${{ github.repository }}
+#     queue: max
+concurrency:
+  group: feature-loop-${{ github.repository }}
+  cancel-in-progress: false
+
+# Minimal permissions: read repository contents (the configuration file), and
+# write issues (labels, comments, assignment, and closing completed sub-issues)
+# while only reading pull requests.
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+jobs:
+  feature-loop:
+    runs-on: ubuntu-latest
+    # Merged-PR guard: a manual dispatch always runs, but a pull-request event
+    # only runs when the pull request was actually merged. Pull requests closed
+    # without merging are ignored.
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch'
+          || github.event.pull_request.merged == true }}
+    steps:
+      - name: Advance the feature epic
+        uses: lukeorellana/loop-engineering/actions/feature-loop@v1
+        with:
+          # The workflow GITHUB_TOKEN is sufficient for repository operations.
+          github-token: ${{ github.token }}
+          # Coding-agent assignment may require a credential with broader scope
+          # than GITHUB_TOKEN. Provide one as a secret; when it is empty the
+          # action falls back to github-token.
+          agent-token: ${{ secrets.FEATURE_LOOP_AGENT_TOKEN }}
+          # Only present on workflow_dispatch; ignored for merged-PR runs.
+          epic-issue: ${{ github.event.inputs.epic-issue }}
+          dry-run: ${{ github.event.inputs.dry-run }}

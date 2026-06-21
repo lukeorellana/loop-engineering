@@ -5,15 +5,14 @@ sub-issues, assigning exactly one issue at a time to the GitHub Copilot coding
 agent. The loop remains human-gated: a human reviews and merges every pull
 request before the next issue starts.
 
-> **Status:** Adapter, preflight, trusted merged-PR resolution, the GitHub
-> Copilot agent provider, and the transactional controller orchestration are
-> implemented; only the Octokit transport binding and consumer workflow packaging
-> are not yet wired in. The action entry point currently reports that Feature Loop
-> is not yet implemented and exits successfully. The reusable contracts
-> (configuration, domain types, state model, and ports) are defined under `src/`
-> and exported from `src/contracts.ts`; the GitHub repository adapter and
-> preflight live under `src/adapters/github/` and `src/preflight/`, and the
-> controller lives under `src/orchestrator/`. See
+> **Status:** The action is packaged end to end. The repository adapter,
+> preflight, trusted merged-PR resolution, the GitHub Copilot agent provider, and
+> the transactional controller are wired to Octokit transports through the
+> composition layer in `src/action/` and the entry point in `src/main.ts`. The
+> reusable contracts (configuration, domain types, state model, and ports) are
+> defined under `src/` and exported from `src/contracts.ts`; the GitHub repository
+> adapter and preflight live under `src/adapters/github/` and `src/preflight/`,
+> and the controller lives under `src/orchestrator/`. See
 > [`docs/adr/0001-feature-loop-contracts.md`](docs/adr/0001-feature-loop-contracts.md),
 > [`docs/adr/0002-github-repository-adapter-and-preflight.md`](docs/adr/0002-github-repository-adapter-and-preflight.md),
 > [`docs/adr/0003-trusted-merged-pr-resolution.md`](docs/adr/0003-trusted-merged-pr-resolution.md),
@@ -31,9 +30,85 @@ annotated example and the ADR above for the full contract.
 
 ## Usage
 
+Invoke the action from a workflow with `uses:`. Consumers do not install Node,
+run a repository script, or check out their code; the action never executes
+pull-request code.
+
 ```yaml
 - uses: lukeorellana/loop-engineering/actions/feature-loop@v1
+  with:
+    epic-issue: ${{ github.event.inputs.epic-issue }}
 ```
+
+A complete, ready-to-copy consumer workflow — with the `workflow_dispatch` and
+merged-`pull_request` triggers, the merged-PR guard, minimal permissions, and
+repository-wide serialization — is provided in
+[`examples/feature-loop.workflow.yml`](examples/feature-loop.workflow.yml).
+
+### Inputs
+
+| Input          | Required | Default                    | Description                                                                                                                   |
+| -------------- | -------- | -------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `github-token` | yes      | `${{ github.token }}`      | Token for repository reads and writes (issues, labels, comments).                                                             |
+| `agent-token`  | no       | `github-token`             | Token for assigning the Copilot coding agent. Defaults to `github-token`; supply a broader-scoped one if assignment needs it. |
+| `epic-issue`   | no       | —                          | Epic issue number for a manual start. Required for `workflow_dispatch`; ignored for merged-PR runs.                           |
+| `dry-run`      | no       | `false`                    | When `true`, evaluate only and perform no writes.                                                                             |
+| `config-path`  | no       | `.github/feature-loop.yml` | Configuration path on the default branch.                                                                                     |
+
+Inputs are validated and fail closed; credentials are registered as secrets so
+they are masked in logs and never printed.
+
+### Outputs
+
+Every normal exit path sets all five outputs. Numeric outputs are empty when
+they do not apply.
+
+| Output            | Description                                                                                                                 |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `outcome`         | `started`, `already-running`, `complete`, `needs-human`, `dry-run`, `no-op`, `configuration-error`, or `operational-error`. |
+| `epic-issue`      | The epic issue number the loop acted on, when resolved.                                                                     |
+| `active-issue`    | The sub-issue the loop is driving (started, running, or paused).                                                            |
+| `completed-issue` | The sub-issue completed from a trusted merged pull request during this run.                                                 |
+| `reason`          | A stable, machine-readable reason code for the outcome.                                                                     |
+
+A Markdown summary of the result (including dry-run previews) is written to
+`GITHUB_STEP_SUMMARY`.
+
+### Exit behavior
+
+- Expected pauses (`needs-human`) and no-op outcomes complete successfully with
+  outputs populated, so the workflow does not fail when the repository simply
+  needs a human or the event does not apply.
+- Invalid configuration and unrecoverable operational errors fail the step.
+
+### Permissions
+
+The action needs minimal, documented permissions:
+
+```yaml
+permissions:
+  contents: read # read the configuration file from the default branch
+  issues: write # labels, status comments, agent assignment, and closing sub-issues
+  pull-requests: read # inspect merged pull requests and linked pull requests
+```
+
+Coding-agent assignment may require a credential with broader scope than the
+default `GITHUB_TOKEN`; provide it through `agent-token`.
+
+### Serialization
+
+Run the controller serially per repository so concurrent events queue instead of
+racing. The action is idempotent, so a queued run that observes already-applied
+state is safe. The reference workflow uses:
+
+```yaml
+concurrency:
+  group: feature-loop-${{ github.repository }}
+  cancel-in-progress: false
+```
+
+which queues controller runs (it never cancels a running controller), equivalent
+to a `queue: max` contract.
 
 ## Development
 
