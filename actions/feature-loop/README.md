@@ -5,9 +5,19 @@ sub-issues, assigning exactly one issue at a time to the GitHub Copilot coding
 agent. The loop remains human-gated: a human reviews and merges every pull
 request before the next issue starts.
 
-> **Status:** Scaffolding only. No Feature Loop behavior is implemented yet. The
-> action currently reports that Feature Loop is not yet implemented and exits
-> successfully.
+> **Status:** Scaffolding and contracts. No GitHub behavior is implemented yet.
+> The action currently reports that Feature Loop is not yet implemented and exits
+> successfully. The reusable contracts (configuration, domain types, state model,
+> and ports) are defined under `src/` and exported from `src/contracts.ts`; see
+> [`docs/adr/0001-feature-loop-contracts.md`](docs/adr/0001-feature-loop-contracts.md).
+
+## Configuration
+
+Feature Loop reads a versioned `.github/feature-loop.yml` from the repository
+default branch. Every key is optional and resolves to documented, secure
+defaults; missing configuration uses the defaults and unsupported versions fail
+closed. See [`examples/feature-loop.yml`](examples/feature-loop.yml) for an
+annotated example and the ADR above for the full contract.
 
 ## Usage
 

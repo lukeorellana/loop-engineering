@@ -1,0 +1,52 @@
+# Example .github/feature-loop.yml
+#
+# Every key below is optional. A repository with no configuration file resolves
+# to these same documented defaults. Only "version" is required when a file is
+# present; an unsupported or missing version fails closed.
+
+version: 1
+
+issues:
+  # native | markdown | auto
+  #   native:   use only native GitHub sub-issues.
+  #   markdown: use only the Markdown section identified below.
+  #   auto:     use native when non-empty, otherwise Markdown. If both are
+  #             non-empty and differ, preflight fails closed.
+  source: auto
+  markdown:
+    # Heading whose list contains the ordered sub-issues.
+    heading: Ordered sub-issues
+
+agent:
+  # Coding-agent provider. Defaults to github-copilot.
+  provider: github-copilot
+  # null selects a model automatically (the secure default). Set an explicit
+  # model name to pin one; the name is never hardcoded in the loop.
+  model: null
+
+base:
+  # null uses the repository default branch. Set a branch name to override.
+  branch: null
+
+merge:
+  # A human merge is always required; this cannot be disabled.
+  requireHuman: true
+  # Automatic merge is never supported.
+  autoMerge: false
+
+concurrency:
+  # Exactly one active issue per epic.
+  activeIssuesPerEpic: 1
+
+# Canonical state labels. Each label may be customized, but the eight canonical
+# states must map to eight distinct labels so that exactly one canonical state
+# label can exist on an issue at a time.
+labels:
+  todo: 'feature-loop:todo'
+  in-progress: 'feature-loop:in-progress'
+  blocked: 'feature-loop:blocked'
+  needs-human: 'feature-loop:needs-human'
+  skipped: 'feature-loop:skipped'
+  invalid: 'feature-loop:invalid'
+  done: 'feature-loop:done'
+  not-planned: 'feature-loop:not-planned'
