@@ -61,6 +61,7 @@ export interface ApiPullRequest {
   readonly mergedBy: string | null;
   readonly baseRef: string;
   readonly headRef: string;
+  readonly body: string | null;
   readonly closesIssueNumbers: readonly number[];
 }
 

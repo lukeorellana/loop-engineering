@@ -17,6 +17,7 @@ import {
   resolveIssueState,
   type Epic,
   type PullRequestCompletionContext,
+  type MergedPullRequest,
   type SubIssue,
 } from '../../domain/index.js';
 import type {
@@ -210,6 +211,26 @@ export class GitHubRepositoryAdapter implements GitHubRepositoryPort {
       headRef: pr.headRef,
       epicNumber,
       closesIssueNumbers: pr.closesIssueNumbers,
+    };
+  }
+
+  async getMergedPullRequest(
+    pullRequestNumber: number,
+  ): Promise<MergedPullRequest | null> {
+    const pr = await this.run('get pull request', () =>
+      this.api.getPullRequest(pullRequestNumber),
+    );
+    if (pr === null) {
+      return null;
+    }
+    return {
+      number: pr.number,
+      merged: pr.merged,
+      mergedBy: pr.mergedBy ?? undefined,
+      baseRef: pr.baseRef,
+      headRef: pr.headRef,
+      body: pr.body,
+      closingIssueReferences: pr.closesIssueNumbers,
     };
   }
 

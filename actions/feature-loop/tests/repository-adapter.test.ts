@@ -145,6 +145,7 @@ describe('GitHubRepositoryAdapter reads', () => {
           mergedBy: 'alice',
           baseRef: 'main',
           headRef: 'feature',
+          body: null,
           closesIssueNumbers: [11],
         },
       },
@@ -159,6 +160,37 @@ describe('GitHubRepositoryAdapter reads', () => {
       epicNumber: 1,
       closesIssueNumbers: [11],
     });
+  });
+
+  it('exposes the raw merged pull request for trusted resolution', async () => {
+    const api = new FakeGitHubApi({
+      pulls: {
+        9: {
+          number: 9,
+          merged: true,
+          mergedBy: 'maintainer',
+          baseRef: 'main',
+          headRef: 'feature',
+          body: 'Closes #11',
+          closesIssueNumbers: [11],
+        },
+      },
+    });
+    expect(await adapterFor(api).getMergedPullRequest(9)).toEqual({
+      number: 9,
+      merged: true,
+      mergedBy: 'maintainer',
+      baseRef: 'main',
+      headRef: 'feature',
+      body: 'Closes #11',
+      closingIssueReferences: [11],
+    });
+  });
+
+  it('returns null for a missing merged pull request', async () => {
+    expect(
+      await adapterFor(new FakeGitHubApi()).getMergedPullRequest(404),
+    ).toBeNull();
   });
 
   it('collects linked pull requests across pages', async () => {

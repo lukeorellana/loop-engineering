@@ -5,16 +5,17 @@ sub-issues, assigning exactly one issue at a time to the GitHub Copilot coding
 agent. The loop remains human-gated: a human reviews and merges every pull
 request before the next issue starts.
 
-> **Status:** Adapter and preflight implemented; controller orchestration and
-> the Octokit transport are not yet wired in. The action entry point currently
-> reports that Feature Loop is not yet implemented and exits successfully. The
-> reusable contracts (configuration, domain types, state model, and ports) are
-> defined under `src/` and exported from `src/contracts.ts`; the GitHub
-> repository adapter and preflight live under `src/adapters/github/` and
-> `src/preflight/`. See
-> [`docs/adr/0001-feature-loop-contracts.md`](docs/adr/0001-feature-loop-contracts.md)
+> **Status:** Adapter, preflight, and trusted merged-PR resolution implemented;
+> controller orchestration and the Octokit transport are not yet wired in. The
+> action entry point currently reports that Feature Loop is not yet implemented
+> and exits successfully. The reusable contracts (configuration, domain types,
+> state model, and ports) are defined under `src/` and exported from
+> `src/contracts.ts`; the GitHub repository adapter and preflight live under
+> `src/adapters/github/` and `src/preflight/`. See
+> [`docs/adr/0001-feature-loop-contracts.md`](docs/adr/0001-feature-loop-contracts.md),
+> [`docs/adr/0002-github-repository-adapter-and-preflight.md`](docs/adr/0002-github-repository-adapter-and-preflight.md),
 > and
-> [`docs/adr/0002-github-repository-adapter-and-preflight.md`](docs/adr/0002-github-repository-adapter-and-preflight.md).
+> [`docs/adr/0003-trusted-merged-pr-resolution.md`](docs/adr/0003-trusted-merged-pr-resolution.md).
 
 ## Configuration
 
