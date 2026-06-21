@@ -89,8 +89,57 @@ export type LoopDecision =
   | { readonly outcome: 'operational-error'; readonly message: string };
 
 /**
+ * Why the loop performed no operation. These are stable, machine-readable codes
+ * the pure state machine emits when the triggering event does not advance the
+ * epic (for example the event does not apply, the epic is closed or empty, or a
+ * completion event belongs to a foreign parent epic).
+ */
+export type NoOpReason =
+  | 'event-not-applicable'
+  | 'epic-not-open'
+  | 'epic-empty'
+  | 'foreign-parent';
+
+/**
+ * A stable, machine-readable reason code carried by every {@link LoopDecision}.
+ *
+ * The code is derived deterministically from the decision so callers can branch
+ * on a single value without re-deriving the reasoning. Pausing decisions reuse
+ * the {@link PauseReason}; no-op decisions emitted by the state machine reuse a
+ * {@link NoOpReason}.
+ */
+export type LoopReasonCode =
+  | 'started'
+  | 'already-running'
+  | 'complete'
+  | 'dry-run'
+  | 'configuration-error'
+  | 'operational-error'
+  | PauseReason
+  | NoOpReason;
+
+/**
  * Extract the {@link ActionOutcome} from a {@link LoopDecision}.
  */
 export function outcomeOf(decision: LoopDecision): ActionOutcome {
   return decision.outcome;
+}
+
+/**
+ * Extract a stable, machine-readable reason code from a {@link LoopDecision}.
+ *
+ * Every decision maps to exactly one code: pausing decisions surface their
+ * {@link PauseReason}, no-op decisions surface their reason string (a
+ * {@link NoOpReason} when produced by the state machine), and the remaining
+ * outcomes use their outcome name, which is itself stable.
+ */
+export function reasonCodeOf(decision: LoopDecision): string {
+  switch (decision.outcome) {
+    case 'needs-human':
+      return decision.reason;
+    case 'no-op':
+      return decision.reason;
+    default:
+      return decision.outcome;
+  }
 }
