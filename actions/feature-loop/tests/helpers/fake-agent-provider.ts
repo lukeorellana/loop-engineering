@@ -17,6 +17,13 @@ export interface FakeAgentProviderConfig {
   id?: string;
   preflightResult?: AgentPreflightResult;
   alreadyStarted?: boolean;
+  /**
+   * Sequence of `isAlreadyStarted` results consumed in call order. When the
+   * sequence is exhausted (or absent), `alreadyStarted` is used. Useful to model
+   * an assignment that is not yet visible on the first read but confirmed on a
+   * subsequent reconciliation read.
+   */
+  alreadyStartedSequence?: boolean[];
   startResult?: (request: AgentStartRequest) => AgentStartResult;
 }
 
@@ -24,6 +31,7 @@ export class FakeAgentProvider implements AgentProviderPort {
   readonly id: string;
   readonly preflightRequests: AgentPreflightRequest[] = [];
   readonly startRequests: AgentStartRequest[] = [];
+  private alreadyStartedCalls = 0;
 
   constructor(private readonly config: FakeAgentProviderConfig = {}) {
     this.id = config.id ?? 'fake-provider';
@@ -38,6 +46,12 @@ export class FakeAgentProvider implements AgentProviderPort {
 
   async isAlreadyStarted(request: AgentStartRequest): Promise<boolean> {
     void request;
+    const index = this.alreadyStartedCalls;
+    this.alreadyStartedCalls += 1;
+    const sequence = this.config.alreadyStartedSequence;
+    if (sequence !== undefined && index < sequence.length) {
+      return sequence[index];
+    }
     return this.config.alreadyStarted ?? false;
   }
 

@@ -54,6 +54,20 @@ export interface GitHubRepositoryReadPort {
   /** The epic and its ordered sub-issues, or `null` if not found. */
   getEpic(epicNumber: number): Promise<Epic | null>;
 
+  /**
+   * The epic with its sub-issues resolved from an explicit, already-ordered list
+   * of sub-issue numbers, or `null` if the epic does not exist.
+   *
+   * The orchestrator resolves the controlling ordered sub-issue list during
+   * preflight (which may come from native sub-issues or the Markdown section) and
+   * re-reads the epic through this method so canonical state always reflects the
+   * configured source rather than the native sub-issue list alone.
+   */
+  getEpicWithSubIssues(
+    epicNumber: number,
+    orderedSubIssueNumbers: readonly number[],
+  ): Promise<Epic | null>;
+
   /** Ordered native GitHub sub-issue numbers for an epic. */
   getNativeSubIssueNumbers(epicNumber: number): Promise<readonly number[]>;
 
@@ -105,6 +119,14 @@ export interface GitHubRepositoryReadPort {
    * request pauses the loop.
    */
   getLinkedPullRequestNumbers(issueNumber: number): Promise<readonly number[]>;
+
+  /**
+   * The body of the most recent status comment on an issue carrying the hidden
+   * marker for `marker`, or `null` when no such comment exists. Used to recover
+   * the machine-readable status the loop previously recorded (for example the
+   * start timestamp used to report the age of stalled active work).
+   */
+  getStatusComment(issueNumber: number, marker: string): Promise<string | null>;
 }
 
 /**
