@@ -10,6 +10,7 @@
  * checks out or executes pull-request code.
  */
 import type { Epic, PullRequestCompletionContext } from '../domain/issues.js';
+import type { MergedPullRequest } from '../domain/merged-pr.js';
 
 /**
  * Identifying information about the repository, including the default branch
@@ -88,6 +89,16 @@ export interface GitHubRepositoryReadPort {
   getPullRequestCompletion(
     pullRequestNumber: number,
   ): Promise<PullRequestCompletionContext | null>;
+
+  /**
+   * The raw, untrusted merged-pull-request view used by trusted merged-PR
+   * resolution, or `null` if the pull request does not exist. Carries the pull
+   * request body and GitHub's formal closing references so the pure resolver can
+   * reconcile closing keywords against `closingIssuesReferences`.
+   */
+  getMergedPullRequest(
+    pullRequestNumber: number,
+  ): Promise<MergedPullRequest | null>;
 
   /**
    * Numbers of pull requests linked to a sub-issue. More than one linked pull
