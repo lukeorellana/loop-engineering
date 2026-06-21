@@ -44,6 +44,59 @@ export interface AgentStartRequest {
 }
 
 /**
+ * A normalized, provider-independent reason code describing why an agent
+ * operation could not complete (or completed in a degraded way).
+ *
+ * Reason codes are derived only from coarse, transport-level classification —
+ * never from raw provider response bodies — so they are always safe to surface.
+ *
+ * - `actor-not-found`: the coding agent is not available to the repository
+ *   (for example Copilot is not enabled, or the account lacks a seat).
+ * - `unauthenticated`: the agent-assignment credential is missing or invalid.
+ * - `unauthorized`: the credential is valid but lacks permission to assign.
+ * - `invalid-base-branch`: the configured base branch was rejected.
+ * - `unavailable`: a transient provider/transport failure.
+ * - `unknown`: an unclassified failure.
+ */
+export type AgentReasonCode =
+  | 'actor-not-found'
+  | 'unauthenticated'
+  | 'unauthorized'
+  | 'invalid-base-branch'
+  | 'unavailable'
+  | 'unknown';
+
+/**
+ * A request to verify that a provider is available and authorized before the
+ * loop attempts to start any work. Preflight is strictly read-only.
+ */
+export interface AgentPreflightRequest {
+  /** The epic the loop intends to advance. */
+  readonly epic: Epic;
+  /** Provider identifier, for example `github-copilot`. */
+  readonly provider: string;
+  /** Base branch the resulting pull request must target. */
+  readonly baseBranch: string;
+  /** Model selection; `auto` lets the provider choose. */
+  readonly model: AgentModelSelection;
+}
+
+/**
+ * The result of a provider preflight check.
+ *
+ * The shape is intentionally compatible with the repository preflight's
+ * provider-check contract: a failure always carries actionable, sanitized
+ * messages, plus a normalized {@link AgentReasonCode} for programmatic handling.
+ */
+export type AgentPreflightResult =
+  | { readonly ok: true }
+  | {
+      readonly ok: false;
+      readonly reason: AgentReasonCode;
+      readonly messages: readonly string[];
+    };
+
+/**
  * The result of attempting to start an agent.
  *
  * - `started`: the agent was assigned and is now the single active issue.
@@ -70,4 +123,6 @@ export type AgentStartResult =
       readonly status: 'failed';
       readonly issueNumber: number;
       readonly error: string;
+      /** Normalized, sanitized reason for the failure. */
+      readonly reason: AgentReasonCode;
     };
