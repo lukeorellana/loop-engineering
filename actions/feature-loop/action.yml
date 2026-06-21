@@ -1,0 +1,9 @@
+name: 'Feature Loop'
+description: 'Advance a feature epic through ordered sub-issues, assigning one issue at a time to the GitHub Copilot coding agent.'
+author: 'lukeorellana'
+branding:
+  icon: 'refresh-cw'
+  color: 'purple'
+runs:
+  using: 'node20'
+  main: 'dist/index.js'
