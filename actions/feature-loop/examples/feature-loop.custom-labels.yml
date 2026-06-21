@@ -1,0 +1,17 @@
+# Minimal .github/feature-loop.yml using customized labels.
+#
+# Demonstrates overriding canonical state labels while preserving exactly one
+# canonical state per issue. All unspecified keys fall back to documented
+# defaults.
+
+version: 1
+
+labels:
+  todo: 'fl/todo'
+  in-progress: 'fl/active'
+  blocked: 'fl/blocked'
+  needs-human: 'fl/needs-human'
+  skipped: 'fl/skipped'
+  invalid: 'fl/invalid'
+  done: 'fl/done'
+  not-planned: 'fl/not-planned'
