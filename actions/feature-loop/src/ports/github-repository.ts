@@ -28,11 +28,40 @@ export interface GitHubRepositoryReadPort {
   /** Repository identity and default branch. */
   getRepositoryInfo(): Promise<RepositoryInfo>;
 
+  /**
+   * Contents of `path` on the repository default branch, decoded as UTF-8 text,
+   * or `null` when the file does not exist.
+   *
+   * Configuration is always read through this method so it comes from the
+   * default branch and never from a pull-request head, a fork, an arbitrary ref,
+   * or checked-out pull-request code.
+   */
+  getDefaultBranchFile(path: string): Promise<string | null>;
+
+  /** Whether a branch with the given name exists in the repository. */
+  branchExists(branch: string): Promise<boolean>;
+
+  /** All label names defined in the repository (paginated internally). */
+  getRepositoryLabelNames(): Promise<readonly string[]>;
+
+  /**
+   * Whether the configured token has write access to the repository, or `null`
+   * when this cannot be determined from the available API responses.
+   */
+  hasWriteAccess(): Promise<boolean | null>;
+
   /** The epic and its ordered sub-issues, or `null` if not found. */
   getEpic(epicNumber: number): Promise<Epic | null>;
 
   /** Ordered native GitHub sub-issue numbers for an epic. */
   getNativeSubIssueNumbers(epicNumber: number): Promise<readonly number[]>;
+
+  /**
+   * The native GitHub parent issue number for an issue, or `null` when the issue
+   * has no parent. Uses GitHub parent/sub-issue metadata rather than any
+   * `Parent epic:` body text.
+   */
+  getParentEpicNumber(issueNumber: number): Promise<number | null>;
 
   /**
    * Ordered sub-issue numbers parsed from the epic body's Markdown section
@@ -79,6 +108,20 @@ export interface GitHubRepositoryWritePort {
 
   /** Close a sub-issue as completed. */
   closeIssueAsCompleted(issueNumber: number): Promise<void>;
+
+  /** Create a repository label if it does not already exist. */
+  createLabel(name: string): Promise<void>;
+
+  /**
+   * Create or update a status comment on an issue. The comment carries a hidden
+   * machine-readable marker so that a previous status comment with the same
+   * marker is updated in place instead of duplicated.
+   */
+  upsertStatusComment(
+    issueNumber: number,
+    marker: string,
+    body: string,
+  ): Promise<void>;
 }
 
 /**

@@ -36,6 +36,21 @@ export type IssueSource = (typeof ISSUE_SOURCES)[number];
 export type CanonicalStateLabels = Readonly<Record<IssueState, string>>;
 
 /**
+ * Configuration controlling canonical-state labels and how missing labels are
+ * handled during preflight.
+ */
+export interface LabelsConfig {
+  /**
+   * When `true`, preflight creates any missing canonical-state labels instead of
+   * failing closed. Defaults to `false`: missing labels are reported so a human
+   * decides whether the loop should manage labels.
+   */
+  readonly autoCreate: boolean;
+  /** The canonical-state to label-name mapping. */
+  readonly names: CanonicalStateLabels;
+}
+
+/**
  * Configuration for Markdown-based sub-issue discovery.
  */
 export interface MarkdownIssuesConfig {
@@ -107,7 +122,7 @@ export interface FeatureLoopConfig {
   readonly base: BaseConfig;
   readonly merge: MergeConfig;
   readonly concurrency: ConcurrencyConfig;
-  readonly labels: CanonicalStateLabels;
+  readonly labels: LabelsConfig;
 }
 
 /**
@@ -151,6 +166,9 @@ export function defaultConfig(): FeatureLoopConfig {
     concurrency: {
       activeIssuesPerEpic: 1,
     },
-    labels: { ...DEFAULT_CANONICAL_STATE_LABELS },
+    labels: {
+      autoCreate: false,
+      names: { ...DEFAULT_CANONICAL_STATE_LABELS },
+    },
   };
 }
