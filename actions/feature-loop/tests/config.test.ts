@@ -53,9 +53,9 @@ describe('configuration overrides', () => {
 
   it('customizes labels while preserving one canonical state', () => {
     const config = parseConfig(readExample('feature-loop.custom-labels.yml'));
-    expect(config.labels['in-progress']).toBe('fl/active');
-    expect(config.labels.done).toBe('fl/done');
-    const labelNames = Object.values(config.labels);
+    expect(config.labels.names['in-progress']).toBe('fl/active');
+    expect(config.labels.names.done).toBe('fl/done');
+    const labelNames = Object.values(config.labels.names);
     expect(new Set(labelNames).size).toBe(labelNames.length);
   });
 
@@ -149,6 +149,34 @@ describe('configuration failure modes', () => {
         labels: { todo: 'same', done: 'same' },
       }),
     ).toThrow(/distinct label/);
+  });
+
+  it('defaults labels.auto-create to false', () => {
+    expect(defaultConfig().labels.autoCreate).toBe(false);
+    expect(
+      resolveConfig({
+        version: SUPPORTED_CONFIG_VERSION,
+        labels: { todo: 'fl/todo' },
+      }).labels.autoCreate,
+    ).toBe(false);
+  });
+
+  it('honors labels.auto-create alongside label names', () => {
+    const config = resolveConfig({
+      version: SUPPORTED_CONFIG_VERSION,
+      labels: { 'auto-create': true, todo: 'fl/todo' },
+    });
+    expect(config.labels.autoCreate).toBe(true);
+    expect(config.labels.names.todo).toBe('fl/todo');
+  });
+
+  it('rejects a non-boolean labels.auto-create', () => {
+    expect(() =>
+      resolveConfig({
+        version: SUPPORTED_CONFIG_VERSION,
+        labels: { 'auto-create': 'yes' },
+      }),
+    ).toThrow(/"labels.auto-create" must be a boolean/);
   });
 
   it('collects multiple actionable errors', () => {

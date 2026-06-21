@@ -42,6 +42,9 @@ concurrency:
 # states must map to eight distinct labels so that exactly one canonical state
 # label can exist on an issue at a time.
 labels:
+  # When true, preflight creates any missing canonical-state labels. When false
+  # (the default), missing labels are reported and the loop fails closed.
+  auto-create: false
   todo: 'feature-loop:todo'
   in-progress: 'feature-loop:in-progress'
   blocked: 'feature-loop:blocked'

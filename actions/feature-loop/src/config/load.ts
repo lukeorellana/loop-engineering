@@ -15,12 +15,12 @@ import { parse as parseYaml, YAMLParseError } from 'yaml';
 
 import { ConfigurationError } from './errors.js';
 import {
-  CanonicalStateLabels,
   DEFAULT_CANONICAL_STATE_LABELS,
   defaultConfig,
   FeatureLoopConfig,
   ISSUE_SOURCES,
   IssueSource,
+  LabelsConfig,
   SUPPORTED_CONFIG_VERSION,
 } from './schema.js';
 import { CANONICAL_ISSUE_STATES, IssueState } from '../domain/state.js';
@@ -295,22 +295,34 @@ function resolveConcurrency(
   return { activeIssuesPerEpic };
 }
 
-function resolveLabels(value: unknown, errors: string[]): CanonicalStateLabels {
-  const labels: Record<IssueState, string> = {
+function resolveLabels(value: unknown, errors: string[]): LabelsConfig {
+  const names: Record<IssueState, string> = {
     ...DEFAULT_CANONICAL_STATE_LABELS,
   };
+  let autoCreate = false;
   if (value === undefined) {
-    return labels;
+    return { autoCreate, names };
   }
   if (!isPlainObject(value)) {
     errors.push(
       '"labels" must be a mapping of canonical states to label names.',
     );
-    return labels;
+    return { autoCreate, names };
+  }
+
+  if (value['auto-create'] !== undefined) {
+    if (typeof value['auto-create'] !== 'boolean') {
+      errors.push('"labels.auto-create" must be a boolean.');
+    } else {
+      autoCreate = value['auto-create'];
+    }
   }
 
   const known = new Set<string>(CANONICAL_ISSUE_STATES);
   for (const key of Object.keys(value)) {
+    if (key === 'auto-create') {
+      continue;
+    }
     if (!known.has(key)) {
       errors.push(
         `"labels.${key}" is not a canonical state. Valid states: ${CANONICAL_ISSUE_STATES.join(', ')}.`,
@@ -322,13 +334,13 @@ function resolveLabels(value: unknown, errors: string[]): CanonicalStateLabels {
       errors.push(`"labels.${key}" must be a non-empty string.`);
       continue;
     }
-    labels[key as IssueState] = labelValue;
+    names[key as IssueState] = labelValue;
   }
 
   // Preserve "one canonical state": distinct states must map to distinct labels.
   const seen = new Map<string, IssueState>();
   for (const state of CANONICAL_ISSUE_STATES) {
-    const label = labels[state];
+    const label = names[state];
     const existing = seen.get(label);
     if (existing !== undefined) {
       errors.push(
@@ -339,7 +351,7 @@ function resolveLabels(value: unknown, errors: string[]): CanonicalStateLabels {
     }
   }
 
-  return labels;
+  return { autoCreate, names };
 }
 
 function resolveBoolean(
