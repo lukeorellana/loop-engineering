@@ -11,6 +11,7 @@
  */
 import type { Epic, PullRequestCompletionContext } from '../domain/issues.js';
 import type { MergedPullRequest } from '../domain/merged-pr.js';
+import type { OpenedPullRequest } from '../domain/pr-link.js';
 
 /**
  * Identifying information about the repository, including the default branch
@@ -115,6 +116,25 @@ export interface GitHubRepositoryReadPort {
   ): Promise<MergedPullRequest | null>;
 
   /**
+   * The raw, untrusted opened-pull-request view used by pull-request link
+   * reconciliation, or `null` if the pull request does not exist. Carries the
+   * author login, base branch, body, and GitHub's formal closing references so
+   * the pure resolver can decide whether a closing relationship must be
+   * recorded.
+   */
+  getOpenedPullRequest(
+    pullRequestNumber: number,
+  ): Promise<OpenedPullRequest | null>;
+
+  /**
+   * Open sub-issue numbers currently carrying `inProgressLabel`, the canonical
+   * active state. Used to resolve the active Feature Loop sub-issue from
+   * canonical state when reconciling a pull request's closing relationship.
+   * Exactly one result is an unambiguous active issue.
+   */
+  findActiveSubIssues(inProgressLabel: string): Promise<readonly number[]>;
+
+  /**
    * Numbers of pull requests linked to a sub-issue. More than one linked pull
    * request pauses the loop.
    */
@@ -141,6 +161,12 @@ export interface GitHubRepositoryWritePort {
 
   /** Close a sub-issue as completed. */
   closeIssueAsCompleted(issueNumber: number): Promise<void>;
+
+  /**
+   * Replace the body of a pull request. Used to record a formal closing
+   * relationship (`Closes #<issue>`) with the active sub-issue.
+   */
+  updatePullRequestBody(pullRequestNumber: number, body: string): Promise<void>;
 
   /** Create a repository label if it does not already exist. */
   createLabel(name: string): Promise<void>;

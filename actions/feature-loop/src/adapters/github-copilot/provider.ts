@@ -27,7 +27,11 @@ import {
   type AssignableIssue,
   type CopilotAgentApi,
 } from './api.js';
-import { findCopilotActor, isCopilotLogin } from './actors.js';
+import {
+  COPILOT_ACTOR_LOGINS,
+  findCopilotActor,
+  isCopilotLogin,
+} from './actors.js';
 import { CopilotProviderError, sanitizeCopilotError } from './errors.js';
 
 /** The stable provider identifier. */
@@ -45,6 +49,9 @@ export interface GitHubCopilotProviderOptions {
 
 export class GitHubCopilotProvider implements AgentProviderPort {
   readonly id = GITHUB_COPILOT_PROVIDER_ID;
+
+  /** Known Copilot coding-agent author logins, current first. */
+  readonly authorLogins = COPILOT_ACTOR_LOGINS;
 
   private readonly api: CopilotAgentApi;
   private readonly clock: Clock;

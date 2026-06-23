@@ -19,6 +19,12 @@
  */
 
 import type { CanonicalStateLabels } from '../config/schema.js';
+import {
+  ConfigurationError,
+  defaultConfig,
+  parseConfig,
+  type FeatureLoopConfig,
+} from '../config/index.js';
 import type {
   AgentModelSelection,
   AgentStartRequest,
@@ -30,8 +36,9 @@ import {
   resolveMergedPullRequest,
   type MergedPullRequest,
 } from '../domain/merged-pr.js';
+import { resolvePullRequestLink } from '../domain/pr-link.js';
 import { decideLoop, type LoopEvaluation } from '../domain/state-machine.js';
-import { preflight } from '../preflight/index.js';
+import { DEFAULT_CONFIG_PATH, preflight } from '../preflight/index.js';
 import type { AgentProviderPort } from '../ports/agent-provider.js';
 import type { Clock } from '../ports/clock.js';
 import type { GitHubRepositoryPort } from '../ports/github-repository.js';
@@ -195,6 +202,13 @@ class Controller {
         reason: resolved.reason,
       });
       return this.noOp(resolved.reason);
+    }
+
+    // Pull-request link reconciliation: an opened or reopened pull request may
+    // need a formal closing relationship with the active sub-issue recorded
+    // before merge. This path is self-contained and does not advance the loop.
+    if (resolved.kind === 'pr-opened') {
+      return this.reconcilePullRequestLink(resolved.pullRequestNumber);
     }
 
     const info = await this.repository.getRepositoryInfo();
@@ -415,6 +429,175 @@ class Controller {
     });
     this.completedIssueNumber = prep.issueNumber;
     return null;
+  }
+
+  // ---- Pull-request link reconciliation -----------------------------------
+
+  /**
+   * Reconcile the closing relationship of an opened or reopened pull request.
+   *
+   * Re-reads the authoritative pull request, confirms it was opened by the
+   * configured coding-agent provider against the configured base branch with no
+   * existing closing reference, resolves the single active sub-issue from
+   * canonical Feature Loop state, and — outside dry run — appends an idempotent
+   * `Closes #<issue>` line and verifies GitHub records the relationship. Zero or
+   * multiple active issues never produce an inferred link; the path fails closed.
+   */
+  private async reconcilePullRequestLink(
+    pullRequestNumber: number,
+  ): Promise<OrchestratorResult> {
+    const info = await this.repository.getRepositoryInfo();
+
+    // Load configuration from the default branch. No epic is known yet, so the
+    // active sub-issue is resolved from canonical state below rather than from a
+    // pull-request closing reference (which is precisely what may be missing).
+    let config: FeatureLoopConfig;
+    try {
+      const text = await this.repository.getDefaultBranchFile(
+        this.configPath ?? DEFAULT_CONFIG_PATH,
+      );
+      config = text === null ? defaultConfig() : parseConfig(text);
+    } catch (error) {
+      if (error instanceof ConfigurationError) {
+        this.logger.warning('Feature Loop: invalid configuration for PR link', {
+          pullRequest: pullRequestNumber,
+        });
+        return {
+          outcome: 'configuration-error',
+          reasonCode: 'configuration-error',
+          dryRun: this.dryRun,
+          details: [...error.messages],
+        };
+      }
+      throw error;
+    }
+
+    const labels = config.labels.names;
+    const baseBranch = config.base.branch ?? info.defaultBranch;
+
+    // Re-read the authoritative pull request from GitHub; the webhook payload is
+    // never trusted for the author, base branch, or closing references.
+    const pr = await this.repository.getOpenedPullRequest(pullRequestNumber);
+    if (pr === null) {
+      this.logger.info('Feature Loop: pull request not found for link', {
+        pullRequest: pullRequestNumber,
+      });
+      return this.linkNoOp('event-not-applicable');
+    }
+
+    // Resolve the active sub-issues from canonical Feature Loop state.
+    const activeIssues = await this.repository.findActiveSubIssues(
+      labels['in-progress'],
+    );
+
+    const resolution = resolvePullRequestLink(pr, {
+      repository: { owner: info.owner, name: info.name },
+      baseBranch,
+      agentLogins: this.provider.authorLogins,
+      activeIssues,
+    });
+
+    if (resolution.outcome === 'no-op') {
+      this.logger.info('Feature Loop: pull request link not applied', {
+        pullRequest: pullRequestNumber,
+        reason: resolution.reason,
+      });
+      return this.linkNoOp(resolution.reason);
+    }
+
+    if (resolution.outcome === 'needs-human') {
+      this.logger.warning('Feature Loop: pull request link is ambiguous', {
+        pullRequest: pullRequestNumber,
+        reason: resolution.reason,
+      });
+      return {
+        outcome: 'needs-human',
+        reasonCode: resolution.reason,
+        dryRun: this.dryRun,
+        details: [resolution.message],
+      };
+    }
+
+    const issueNumber = resolution.issueNumber;
+    // Best-effort epic resolution for reporting; native parent metadata is
+    // absent for Markdown-sourced sub-issues, so a missing parent is not fatal.
+    const epicNumber =
+      (await this.repository.getParentEpicNumber(issueNumber)) ?? undefined;
+
+    if (this.dryRun) {
+      const detail =
+        `Dry run: would link pull request #${pullRequestNumber} to issue ` +
+        `#${issueNumber} with "Closes #${issueNumber}".`;
+      this.logger.info('Feature Loop: dry run pull request link preview', {
+        pullRequest: pullRequestNumber,
+        issue: issueNumber,
+      });
+      return {
+        outcome: 'dry-run',
+        reasonCode: 'pull-request-link',
+        dryRun: true,
+        ...(epicNumber !== undefined ? { epicNumber } : {}),
+        issueNumber,
+        details: [detail],
+      };
+    }
+
+    // Mutate: record the formal closing relationship.
+    await this.repository.updatePullRequestBody(
+      pullRequestNumber,
+      resolution.body,
+    );
+
+    // Verify: re-read and confirm GitHub now reports the closing relationship.
+    const verified =
+      await this.repository.getOpenedPullRequest(pullRequestNumber);
+    const linked =
+      verified !== null &&
+      verified.closingIssueReferences.includes(issueNumber);
+    if (!linked) {
+      const message =
+        `Feature Loop updated pull request #${pullRequestNumber} to close ` +
+        `issue #${issueNumber}, but GitHub has not yet reported the closing ` +
+        'relationship. Confirm the link before merging.';
+      this.logger.warning('Feature Loop: pull request link not verified', {
+        pullRequest: pullRequestNumber,
+        issue: issueNumber,
+      });
+      return {
+        outcome: 'needs-human',
+        reasonCode: 'link-not-verified',
+        dryRun: false,
+        ...(epicNumber !== undefined ? { epicNumber } : {}),
+        issueNumber,
+        details: [message],
+      };
+    }
+
+    const detail =
+      `Linked pull request #${pullRequestNumber} to active issue ` +
+      `#${issueNumber} with "Closes #${issueNumber}".`;
+    this.logger.info('Feature Loop: linked pull request to active issue', {
+      pullRequest: pullRequestNumber,
+      issue: issueNumber,
+      epic: epicNumber,
+    });
+    return {
+      outcome: 'already-running',
+      reasonCode: 'pull-request-linked',
+      dryRun: false,
+      ...(epicNumber !== undefined ? { epicNumber } : {}),
+      issueNumber,
+      details: [detail],
+    };
+  }
+
+  private linkNoOp(reason: string): OrchestratorResult {
+    return {
+      outcome: 'no-op',
+      reasonCode: reason,
+      dryRun: this.dryRun,
+      details: [],
+    };
   }
 
   // ---- Start flow (re-read → mutate → verify) -----------------------------

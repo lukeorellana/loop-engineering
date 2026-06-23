@@ -1,12 +1,15 @@
 /**
  * Pure resolution of the triggering event into a normalized loop context.
  *
- * The orchestrator supports three execution contexts:
+ * The orchestrator supports these execution contexts:
  *
  * - **Manual start**: a `workflow_dispatch` (or comparable) trigger carrying the
  *   epic issue number to advance.
  * - **Merged pull-request continuation**: a `pull_request: closed` delivery whose
  *   merged pull request may complete the active sub-issue and continue the loop.
+ * - **Pull-request link reconciliation**: a `pull_request: opened` or
+ *   `pull_request: reopened` delivery whose pull request may need a formal
+ *   closing relationship with the active sub-issue recorded before merge.
  * - **Unrelated**: anything else, which must produce a strict no-op.
  *
  * {@link resolveEvent} is pure: it classifies the raw inputs without any I/O. The
@@ -43,6 +46,7 @@ export interface LoopEventInput {
 export type ResolvedEvent =
   | { readonly kind: 'manual'; readonly epicNumber: number }
   | { readonly kind: 'merged-pr'; readonly event: MergedPullRequestEvent }
+  | { readonly kind: 'pr-opened'; readonly pullRequestNumber: number }
   | { readonly kind: 'unrelated'; readonly reason: string };
 
 function isPositiveInteger(value: number | undefined): value is number {
@@ -54,6 +58,9 @@ function isPositiveInteger(value: number | undefined): value is number {
  *
  * A closed `pull_request` event is always treated as a merged-PR continuation
  * candidate; the trusted resolver decides whether it actually advances the loop.
+ * An opened or reopened `pull_request` event is a pull-request link
+ * reconciliation candidate; the controller re-reads the authoritative pull
+ * request and decides whether to record a formal closing relationship.
  * Otherwise a positive epic number is treated as a manual start. Everything else
  * is unrelated and produces a no-op.
  */
@@ -70,6 +77,17 @@ export function resolveEvent(input: LoopEventInput): ResolvedEvent {
         action: input.action,
         pullRequest: input.pullRequest,
       },
+    };
+  }
+
+  if (
+    input.name === 'pull_request' &&
+    (input.action === 'opened' || input.action === 'reopened') &&
+    input.pullRequest !== undefined
+  ) {
+    return {
+      kind: 'pr-opened',
+      pullRequestNumber: input.pullRequest.number,
     };
   }
 

@@ -68,8 +68,8 @@ pull-request code.
 ```
 
 A complete, ready-to-copy consumer workflow — with the `workflow_dispatch` and
-merged-`pull_request` triggers, the merged-PR guard, minimal permissions, and
-repository-wide serialization — is provided in
+`pull_request` (`closed`, `opened`, `reopened`) triggers, the merged-PR guard,
+minimal permissions, and repository-wide serialization — is provided in
 [`examples/feature-loop.workflow.yml`](examples/feature-loop.workflow.yml).
 
 ### Inputs
@@ -116,7 +116,7 @@ The action needs minimal, documented permissions:
 permissions:
   contents: read # read the configuration file from the default branch
   issues: write # labels, status comments, agent assignment, and closing sub-issues
-  pull-requests: read # inspect merged pull requests and linked pull requests
+  pull-requests: write # inspect pull requests and record the Closes #<issue> link
 ```
 
 Coding-agent assignment may require a credential with broader scope than the

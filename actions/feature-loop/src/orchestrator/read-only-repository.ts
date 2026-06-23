@@ -38,6 +38,10 @@ export function readOnlyRepository(
       repository.getPullRequestCompletion(pullRequestNumber),
     getMergedPullRequest: (pullRequestNumber) =>
       repository.getMergedPullRequest(pullRequestNumber),
+    getOpenedPullRequest: (pullRequestNumber) =>
+      repository.getOpenedPullRequest(pullRequestNumber),
+    findActiveSubIssues: (inProgressLabel) =>
+      repository.findActiveSubIssues(inProgressLabel),
     getLinkedPullRequestNumbers: (issueNumber) =>
       repository.getLinkedPullRequestNumbers(issueNumber),
     getStatusComment: (issueNumber, marker) =>
@@ -46,6 +50,7 @@ export function readOnlyRepository(
     // Writes are inert no-ops in dry-run mode.
     setCanonicalState: async () => undefined,
     closeIssueAsCompleted: async () => undefined,
+    updatePullRequestBody: async () => undefined,
     createLabel: async () => undefined,
     upsertStatusComment: async () => undefined,
   };

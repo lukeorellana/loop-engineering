@@ -15,6 +15,7 @@ import type { AgentProviderPort } from '../../src/ports/agent-provider.js';
 
 export interface FakeAgentProviderConfig {
   id?: string;
+  authorLogins?: string[];
   preflightResult?: AgentPreflightResult;
   alreadyStarted?: boolean;
   /**
@@ -29,12 +30,14 @@ export interface FakeAgentProviderConfig {
 
 export class FakeAgentProvider implements AgentProviderPort {
   readonly id: string;
+  readonly authorLogins: readonly string[];
   readonly preflightRequests: AgentPreflightRequest[] = [];
   readonly startRequests: AgentStartRequest[] = [];
   private alreadyStartedCalls = 0;
 
   constructor(private readonly config: FakeAgentProviderConfig = {}) {
     this.id = config.id ?? 'fake-provider';
+    this.authorLogins = config.authorLogins ?? ['fake-agent'];
   }
 
   async preflight(

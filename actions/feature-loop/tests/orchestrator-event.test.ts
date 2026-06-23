@@ -30,10 +30,31 @@ describe('resolveEvent', () => {
     expect(result).toEqual({ kind: 'manual', epicNumber: 7 });
   });
 
-  it('treats a non-closed pull request as unrelated', () => {
+  it('classifies an opened pull request as a pull-request link candidate', () => {
     const result = resolveEvent({
       name: 'pull_request',
       action: 'opened',
+      pullRequest: pr,
+    });
+    expect(result.kind).toBe('pr-opened');
+    if (result.kind === 'pr-opened') {
+      expect(result.pullRequestNumber).toBe(20);
+    }
+  });
+
+  it('classifies a reopened pull request as a pull-request link candidate', () => {
+    const result = resolveEvent({
+      name: 'pull_request',
+      action: 'reopened',
+      pullRequest: pr,
+    });
+    expect(result.kind).toBe('pr-opened');
+  });
+
+  it('treats an unrelated pull-request action as unrelated', () => {
+    const result = resolveEvent({
+      name: 'pull_request',
+      action: 'synchronize',
       pullRequest: pr,
     });
     expect(result.kind).toBe('unrelated');
