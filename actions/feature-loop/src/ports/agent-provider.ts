@@ -22,6 +22,14 @@ export interface AgentProviderPort {
   readonly id: string;
 
   /**
+   * Logins recognized as this provider's pull-request author, current first.
+   * Used to confirm that a pull request was opened by the configured
+   * coding-agent provider before its closing relationship is reconciled.
+   * Matching is case-insensitive.
+   */
+  readonly authorLogins: readonly string[];
+
+  /**
    * Verify, read-only, that the provider is available to the repository and that
    * the agent-assignment credential is present and authorized. Used during
    * preflight so the loop fails closed before any mutation is attempted.

@@ -25,9 +25,36 @@ configuration from it.
 ### Pull-request code is never executed
 
 The reference workflow deliberately has no `actions/checkout` step. The action
-inspects pull-request _metadata_ (merge status, base branch, closing references)
-through the GitHub API; it never executes, builds, or sources pull-request
-contents. This is why the loop is safe to run on `pull_request: closed` events.
+inspects pull-request _metadata_ (author, merge status, base branch, closing
+references) through the GitHub API; it never executes, builds, or sources
+pull-request contents. This is why the loop is safe to run on `pull_request`
+events. When it links a Copilot-created pull request to the active sub-issue it
+updates only the pull-request _body_ (appending `Closes #<issue>`); it never
+reads or runs pull-request code.
+
+### Conservative pull-request linking
+
+When the coding agent opens (or reopens) a pull request, Feature Loop may record
+a formal closing relationship with the active sub-issue so the later merge can
+complete it. The link is applied only when **all** of these hold, and it fails
+closed otherwise:
+
+- The pull request was authored by the configured coding-agent provider (GitHub
+  Copilot in v1). Pull requests authored by anyone else are ignored.
+- The pull request targets the configured base branch.
+- The pull request has **no** existing formal closing reference (neither a
+  closing keyword in its body nor GitHub `closingIssuesReferences`); an
+  already-linked pull request is left unchanged, which also makes replayed
+  `opened`/`reopened` events idempotent.
+- **Exactly one** sub-issue is in the active (`in-progress`) canonical state.
+  Zero candidates are a no-op; multiple candidates fail closed
+  (`ambiguous-active-issue`) rather than guessing.
+
+The active sub-issue is resolved from canonical Feature Loop state, never from
+`closedByPullRequestsReferences` (which only contains already-linked pull
+requests). After updating the body the action re-reads the pull request and
+verifies GitHub reports the expected `closingIssuesReferences`; if it does not,
+the action pauses for a human (`link-not-verified`) rather than assuming success.
 
 ### Trusted merged-PR completion
 
@@ -73,19 +100,22 @@ Grant only:
 permissions:
   contents: read # read .github/feature-loop.yml from the default branch
   issues: write # labels, status comments, agent assignment, closing sub-issues
-  pull-requests: read # inspect merged and linked pull requests
+  pull-requests: write # inspect pull requests and record the Closes #<issue> link
 ```
 
-Do not grant `contents: write` or `pull-requests: write`. The loop never writes
-repository contents and never merges pull requests.
+Do not grant `contents: write`. The loop never writes repository contents and
+never merges pull requests. `pull-requests: write` is required only so the
+action can append a `Closes #<issue>` line to a Copilot-created pull request that
+has no formal closing relationship yet; it never merges or runs pull requests.
 
 ## Credentials
 
 Feature Loop uses two logical credentials, each with a distinct responsibility:
 
 - **`github-token`** — repository reads and writes (configuration, labels,
-  status comments, closing completed sub-issues). The workflow `GITHUB_TOKEN`
-  with the permissions above is sufficient.
+  status comments, closing completed sub-issues, and recording the
+  `Closes #<issue>` link on a Copilot-created pull request). The workflow
+  `GITHUB_TOKEN` with the permissions above is sufficient.
 - **`agent-token`** — assigning the GitHub Copilot coding agent. Coding-agent
   assignment may require a credential with broader scope than `GITHUB_TOKEN`.
   When it does, supply a dedicated credential; when `agent-token` is empty the

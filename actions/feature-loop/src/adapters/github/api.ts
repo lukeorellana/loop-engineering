@@ -59,6 +59,8 @@ export interface ApiPullRequest {
   readonly number: number;
   readonly merged: boolean;
   readonly mergedBy: string | null;
+  /** The pull-request author login, or `null` when unknown. */
+  readonly author?: string | null;
   readonly baseRef: string;
   readonly headRef: string;
   readonly body: string | null;
@@ -132,6 +134,18 @@ export interface GitHubApi {
 
   /** A pull request, or `null` when it does not exist. */
   getPullRequest(pullNumber: number): Promise<ApiPullRequest | null>;
+
+  /** Replace the body of a pull request. */
+  updatePullRequestBody(pullNumber: number, body: string): Promise<void>;
+
+  /**
+   * One page of open issues carrying `label`, in repository order. Pull requests
+   * are excluded; only issues are returned.
+   */
+  listIssuesWithLabel(
+    label: string,
+    page: number,
+  ): Promise<ApiPage<ApiNumberRef>>;
 
   /** One page of pull requests linked to an issue. */
   listLinkedPullRequests(

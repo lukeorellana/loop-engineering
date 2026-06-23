@@ -18,6 +18,7 @@ import {
   type Epic,
   type PullRequestCompletionContext,
   type MergedPullRequest,
+  type OpenedPullRequest,
   type SubIssue,
 } from '../../domain/index.js';
 import type {
@@ -267,6 +268,42 @@ export class GitHubRepositoryAdapter implements GitHubRepositoryPort {
       this.api.listLinkedPullRequests(issueNumber, page),
     );
     return refs.map((ref) => ref.number);
+  }
+
+  async getOpenedPullRequest(
+    pullRequestNumber: number,
+  ): Promise<OpenedPullRequest | null> {
+    const pr = await this.run('get pull request', () =>
+      this.api.getPullRequest(pullRequestNumber),
+    );
+    if (pr === null) {
+      return null;
+    }
+    return {
+      number: pr.number,
+      author: pr.author ?? null,
+      baseRef: pr.baseRef,
+      body: pr.body,
+      closingIssueReferences: pr.closesIssueNumbers,
+    };
+  }
+
+  async findActiveSubIssues(
+    inProgressLabel: string,
+  ): Promise<readonly number[]> {
+    const refs = await this.collectAll('list issues with label', (page) =>
+      this.api.listIssuesWithLabel(inProgressLabel, page),
+    );
+    return refs.map((ref) => ref.number);
+  }
+
+  async updatePullRequestBody(
+    pullRequestNumber: number,
+    body: string,
+  ): Promise<void> {
+    await this.run('update pull request', () =>
+      this.api.updatePullRequestBody(pullRequestNumber, body),
+    );
   }
 
   async setCanonicalState(issueNumber: number, label: string): Promise<void> {

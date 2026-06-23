@@ -384,11 +384,41 @@ export class OctokitGitHubApi implements GitHubApi {
       number: data.number,
       merged: data.merged,
       mergedBy: data.merged_by?.login ?? null,
+      author: data.user?.login ?? null,
       baseRef: data.base.ref,
       headRef: data.head.ref,
       body: data.body ?? null,
       closesIssueNumbers: closesIssueNumbers.map((ref) => ref.number),
     };
+  }
+
+  async updatePullRequestBody(pullNumber: number, body: string): Promise<void> {
+    await this.octokit.rest.pulls.update({
+      owner: this.owner,
+      repo: this.repo,
+      pull_number: pullNumber,
+      body,
+    });
+  }
+
+  async listIssuesWithLabel(
+    label: string,
+    page: number,
+  ): Promise<ApiPage<ApiNumberRef>> {
+    const { data } = await this.octokit.rest.issues.listForRepo({
+      owner: this.owner,
+      repo: this.repo,
+      labels: label,
+      state: 'open',
+      per_page: PER_PAGE,
+      page,
+    });
+    // listForRepo returns both issues and pull requests; pull requests carry a
+    // `pull_request` field and are excluded so only true issues are reported.
+    const items = data
+      .filter((item) => item.pull_request === undefined)
+      .map((item) => ({ number: item.number }));
+    return { items, hasNextPage: data.length === PER_PAGE };
   }
 
   async listLinkedPullRequests(

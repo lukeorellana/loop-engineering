@@ -6,6 +6,9 @@
 # - `workflow_dispatch` starts (or re-runs) the loop for a chosen epic.
 # - `pull_request: closed` continues the loop after a human merges a pull
 #   request, and is ignored when the pull request is closed without merging.
+# - `pull_request: opened`/`reopened` records a formal `Closes #<issue>`
+#   relationship on a Copilot-created pull request when the active sub-issue is
+#   unambiguous, so the merged-PR continuation can later advance the loop.
 #
 # The action never checks out or executes repository or pull-request code, so
 # this workflow deliberately has no `actions/checkout` step.
@@ -24,7 +27,7 @@ on:
         default: false
         type: boolean
   pull_request:
-    types: [closed]
+    types: [closed, opened, reopened]
 
 # Serialize every controller event repository-wide so concurrent triggers queue
 # instead of racing. `cancel-in-progress: false` queues runs (it never cancels a
@@ -37,22 +40,26 @@ concurrency:
   group: feature-loop-${{ github.repository }}
   cancel-in-progress: false
 
-# Minimal permissions: read repository contents (the configuration file), and
-# write issues (labels, comments, assignment, and closing completed sub-issues)
-# while only reading pull requests.
+# Minimal permissions: read repository contents (the configuration file), write
+# issues (labels, comments, assignment, and closing completed sub-issues), and
+# write pull requests (recording the `Closes #<issue>` relationship on a
+# Copilot-created pull request).
 permissions:
   contents: read
   issues: write
-  pull-requests: read
+  pull-requests: write
 
 jobs:
   feature-loop:
     runs-on: ubuntu-latest
-    # Merged-PR guard: a manual dispatch always runs, but a pull-request event
-    # only runs when the pull request was actually merged. Pull requests closed
-    # without merging are ignored.
+    # Merged-PR guard: a manual dispatch always runs; a closed pull-request event
+    # only runs when the pull request was actually merged (pull requests closed
+    # without merging are ignored); an opened or reopened pull-request event
+    # always runs so a Copilot pull request can be linked before merge.
     if: >-
       ${{ github.event_name == 'workflow_dispatch'
+          || github.event.action == 'opened'
+          || github.event.action == 'reopened'
           || github.event.pull_request.merged == true }}
     steps:
       - name: Advance the feature epic

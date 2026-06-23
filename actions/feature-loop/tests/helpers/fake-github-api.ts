@@ -16,6 +16,7 @@ import type {
   ApiRepository,
   GitHubApi,
 } from '../../src/adapters/github/api.js';
+import { parseClosingKeywords } from '../../src/domain/index.js';
 import type { ClosedReason } from '../../src/domain/index.js';
 
 /** Split a list into pages of `size` items, reporting `hasNextPage`. */
@@ -70,6 +71,7 @@ export class FakeGitHubApi implements GitHubApi {
   }[] = [];
   readonly createdComments: { issue: number; body: string }[] = [];
   readonly updatedComments: { id: number; body: string }[] = [];
+  readonly updatedPulls: { pull: number; body: string }[] = [];
 
   constructor(private readonly config: FakeConfig = {}) {}
 
@@ -194,9 +196,52 @@ export class FakeGitHubApi implements GitHubApi {
     return this.config.parents?.[issueNumber] ?? null;
   }
 
+  // Pull requests are stateful so that a body update recomputes the closing
+  // references the way GitHub indexes a closing keyword, exercising the
+  // link → re-read → verify path end to end.
+  private pullStore: Map<number, ApiPullRequest> | null = null;
+
+  private pulls(): Map<number, ApiPullRequest> {
+    if (this.pullStore === null) {
+      this.pullStore = new Map();
+      for (const [key, pull] of Object.entries(this.config.pulls ?? {})) {
+        this.pullStore.set(Number(key), { ...pull });
+      }
+    }
+    return this.pullStore;
+  }
+
   async getPullRequest(pullNumber: number): Promise<ApiPullRequest | null> {
     this.record('getPullRequest', pullNumber);
-    return this.config.pulls?.[pullNumber] ?? null;
+    return this.pulls().get(pullNumber) ?? null;
+  }
+
+  async updatePullRequestBody(pullNumber: number, body: string): Promise<void> {
+    this.record('updatePullRequestBody', pullNumber, body);
+    this.updatedPulls.push({ pull: pullNumber, body });
+    const pulls = this.pulls();
+    const existing = pulls.get(pullNumber);
+    const repo = {
+      owner: this.config.repository?.owner ?? 'octo',
+      name: this.config.repository?.name ?? 'demo',
+    };
+    // Recompute closing references from the new body's closing keywords, as
+    // GitHub does when a pull-request body records a closing relationship.
+    const closesIssueNumbers = parseClosingKeywords(body, repo);
+    if (existing !== undefined) {
+      pulls.set(pullNumber, { ...existing, body, closesIssueNumbers });
+    }
+  }
+
+  async listIssuesWithLabel(
+    label: string,
+    page: number,
+  ): Promise<ApiPage<ApiNumberRef>> {
+    this.record('listIssuesWithLabel', label, page);
+    const refs = Object.values(this.config.issues ?? {})
+      .filter((issue) => issue.open && issue.labelNames.includes(label))
+      .map((issue) => ({ number: issue.number }));
+    return paginate(refs, this.pageSize)(page);
   }
 
   async listLinkedPullRequests(

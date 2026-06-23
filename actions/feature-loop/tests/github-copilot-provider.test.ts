@@ -82,6 +82,15 @@ function providerFor(config: FakeCopilotConfig): {
   return { provider, api };
 }
 
+describe('GitHubCopilotProvider identity', () => {
+  it('exposes the stable provider id and Copilot author logins', () => {
+    const { provider } = providerFor({ actors: [copilotActor] });
+    expect(provider.id).toBe(GITHUB_COPILOT_PROVIDER_ID);
+    expect(provider.authorLogins).toContain('copilot-swe-agent');
+    expect(provider.authorLogins).toContain('copilot');
+  });
+});
+
 describe('GitHubCopilotProvider preflight', () => {
   it('passes when the Copilot actor is assignable', async () => {
     const { provider } = providerFor({ actors: [humanActor, copilotActor] });

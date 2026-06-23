@@ -30,10 +30,12 @@ into the repository as `.github/workflows/feature-loop.yml`.
 The workflow:
 
 - Triggers on `workflow_dispatch` (manual start for a chosen epic) and on
-  `pull_request: closed`.
-- Guards the pull-request trigger so it runs **only when the pull request was
-  actually merged** (`github.event.pull_request.merged == true`). Pull requests
-  closed without merging are ignored.
+  `pull_request` (`closed`, `opened`, and `reopened`).
+- Guards the closed pull-request trigger so it runs **only when the pull request
+  was actually merged** (`github.event.pull_request.merged == true`). Pull
+  requests closed without merging are ignored. Opened and reopened pull-request
+  events always run so a Copilot-created pull request can be linked to the active
+  sub-issue before merge.
 - Declares minimal permissions (see step 3).
 - Serializes controller runs repository-wide (see
   [Serialization](#7-repository-wide-serialization)).
@@ -49,12 +51,14 @@ The action needs only:
 permissions:
   contents: read # read .github/feature-loop.yml from the default branch
   issues: write # labels, status comments, agent assignment, closing sub-issues
-  pull-requests: read # inspect merged and linked pull requests
+  pull-requests: write # inspect pull requests and record the Closes #<issue> link
 ```
 
-These are already declared in the reference workflow. Do not grant
-`contents: write` or `pull-requests: write`; the loop never writes repository
-contents and never merges pull requests.
+These are already declared in the reference workflow. `pull-requests: write` is
+required so the action can append a `Closes #<issue>` line to a Copilot-created
+pull request that has no formal closing relationship yet. Do not grant
+`contents: write`; the loop never writes repository contents and never merges
+pull requests.
 
 ## 4. Provision canonical-state labels
 
@@ -154,8 +158,11 @@ to the job summary with `outcome: dry-run`.
 
 Run the workflow again with **dry-run** `false` (or leave it unset). The loop
 starts the first `todo` sub-issue by assigning it to the coding agent and
-labeling it `in-progress`. After a human merges the sub-issue's pull request,
-the `pull_request: closed` trigger continues the loop automatically.
+labeling it `in-progress`. When the coding agent opens its pull request, the
+`pull_request: opened` trigger records a formal `Closes #<issue>` relationship
+with the active sub-issue (when one is unambiguous) so the merge can complete it.
+After a human merges the sub-issue's pull request, the `pull_request: closed`
+trigger continues the loop automatically.
 
 ## 11. Verify a healthy run
 

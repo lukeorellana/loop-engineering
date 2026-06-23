@@ -63,16 +63,18 @@ these categories.
 
 ### Pause reasons (`outcome: needs-human`)
 
-| Reason                            | Meaning                                                                                      |
-| --------------------------------- | -------------------------------------------------------------------------------------------- |
-| `blocked`                         | Head-of-line sub-issue is `blocked`.                                                         |
-| `invalid`                         | Head-of-line sub-issue resolved to `invalid` (ambiguous or inconsistent state).              |
-| `skipped`                         | Head-of-line sub-issue is `skipped`; the skip must be acknowledged before later work runs.   |
-| `needs-human`                     | Head-of-line sub-issue is explicitly `needs-human`.                                          |
-| `not-planned`                     | Head-of-line sub-issue is closed as `not-planned`; ordering needs human resolution.          |
-| `multiple-canonical-state-labels` | The sub-issue carries more than one canonical-state label (a refinement of `invalid`).       |
-| `multiple-linked-pull-requests`   | The sub-issue has more than one linked pull request; the ambiguity needs a human.            |
-| `assignment-failed`               | The coding agent could not be assigned (or confirmed assigned); a human can resume the loop. |
+| Reason                            | Meaning                                                                                                                                  |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `blocked`                         | Head-of-line sub-issue is `blocked`.                                                                                                     |
+| `invalid`                         | Head-of-line sub-issue resolved to `invalid` (ambiguous or inconsistent state).                                                          |
+| `skipped`                         | Head-of-line sub-issue is `skipped`; the skip must be acknowledged before later work runs.                                               |
+| `needs-human`                     | Head-of-line sub-issue is explicitly `needs-human`.                                                                                      |
+| `not-planned`                     | Head-of-line sub-issue is closed as `not-planned`; ordering needs human resolution.                                                      |
+| `multiple-canonical-state-labels` | The sub-issue carries more than one canonical-state label (a refinement of `invalid`).                                                   |
+| `multiple-linked-pull-requests`   | The sub-issue has more than one linked pull request; the ambiguity needs a human.                                                        |
+| `assignment-failed`               | The coding agent could not be assigned (or confirmed assigned); a human can resume the loop.                                             |
+| `ambiguous-active-issue`          | More than one sub-issue is active (`in-progress`) when linking an opened pull request; the action cannot infer which issue it completes. |
+| `link-not-verified`               | The opened pull request body was updated, but GitHub has not yet reported the closing relationship; confirm the link before merging.     |
 
 When a merged pull request cannot be resolved to a single trusted completion,
 the loop pauses (`needs-human`) with one of these completion-resolution reasons:
@@ -86,15 +88,28 @@ the loop pauses (`needs-human`) with one of these completion-resolution reasons:
 
 ### No-op reasons (`outcome: no-op`)
 
-| Reason                 | Meaning                                                                    |
-| ---------------------- | -------------------------------------------------------------------------- |
-| `event-not-applicable` | The triggering event does not apply to the loop.                           |
-| `epic-not-open`        | The epic issue is closed.                                                  |
-| `epic-empty`           | The epic has no ordered sub-issues.                                        |
-| `foreign-parent`       | A completion event belongs to a different parent epic.                     |
-| `not-merged`           | A `pull_request: closed` event closed without merging.                     |
-| `wrong-base-branch`    | The merge did not target the configured base branch.                       |
-| `no-closing-reference` | The merged pull request has no formal closing relationship to a sub-issue. |
+| Reason                 | Meaning                                                                                                   |
+| ---------------------- | --------------------------------------------------------------------------------------------------------- |
+| `event-not-applicable` | The triggering event does not apply to the loop.                                                          |
+| `epic-not-open`        | The epic issue is closed.                                                                                 |
+| `epic-empty`           | The epic has no ordered sub-issues.                                                                       |
+| `foreign-parent`       | A completion event belongs to a different parent epic.                                                    |
+| `not-merged`           | A `pull_request: closed` event closed without merging.                                                    |
+| `wrong-base-branch`    | The merge did not target the configured base branch.                                                      |
+| `no-closing-reference` | The merged pull request has no formal closing relationship to a sub-issue.                                |
+| `wrong-author`         | An opened pull request was not authored by the coding-agent provider, so it is not linked.                |
+| `already-linked`       | An opened pull request already has a formal closing relationship; the link is left unchanged.             |
+| `no-active-issue`      | No sub-issue is active (`in-progress`) when an agent pull request is opened, so there is nothing to link. |
+
+### Pull-request link reasons
+
+When the coding agent opens (or reopens) a pull request, the loop may record a
+`Closes #<issue>` relationship with the active sub-issue:
+
+| Reason                | Outcome           | Meaning                                                                                          |
+| --------------------- | ----------------- | ------------------------------------------------------------------------------------------------ |
+| `pull-request-linked` | `already-running` | The opened pull request was linked to the active sub-issue and GitHub verified the relationship. |
+| `pull-request-link`   | `dry-run`         | Dry-run preview of the link that would be recorded; no write is performed.                       |
 
 ## Configuration file (`.github/feature-loop.yml`)
 

@@ -26,6 +26,19 @@ The action re-reads the merged pull request through the GitHub API rather than
 trusting the webhook payload, and completes a sub-issue only on a trusted formal
 closing relationship (see [Security model](security.md#trusted-merged-pr-completion)).
 
+### Automatic pull-request linking
+
+When the coding agent opens (or reopens) a pull request, the `pull_request:
+opened` / `reopened` trigger fires and the loop tries to record a formal
+`Closes #<issue>` relationship with the active sub-issue, so the later merge can
+complete it without a human remembering to link it. The link is applied only
+when the pull request was authored by the coding-agent provider, targets the
+configured base branch, has no existing closing relationship, and **exactly one**
+sub-issue is active (`in-progress`). Otherwise the loop is a no-op or pauses for a
+human (see [Security model](security.md#conservative-pull-request-linking)).
+Replayed `opened`/`reopened` events are idempotent: an already-linked pull
+request is left unchanged.
+
 ### Strict zero-write dry-run
 
 A dry run (`dry-run: true`) is strictly read-only. It evaluates the epic and
@@ -147,6 +160,32 @@ For each situation: symptom → cause → fix → verify (run a dry run, then re
   (or remove it from the ordered list), then resume. If it is still needed,
   reopen it and let the loop drive it.
 - **Verify:** Dry-run to confirm the next head-of-line issue, then re-run.
+
+### Pull request that could not be auto-linked
+
+- **Symptom:** A Copilot pull request was opened but no `Closes #<issue>` line was
+  added. The result is `outcome: needs-human` with reason
+  `ambiguous-active-issue` or `link-not-verified`; or `outcome: no-op` with
+  reason `wrong-author`, `wrong-base-branch`, `already-linked`, or
+  `no-active-issue`.
+- **Cause:** The loop links a pull request only when it was authored by the
+  coding-agent provider, targets the configured base branch, has no existing
+  closing relationship, and exactly one sub-issue is active.
+- **Fix:**
+  - `ambiguous-active-issue`: more than one sub-issue is `in-progress`. Resolve
+    the extra active sub-issues so exactly one is active, or manually add the
+    correct `Closes #<issue>` line to the pull request.
+  - `link-not-verified`: the body was updated but GitHub has not yet reported the
+    closing relationship. Confirm the link in the pull request's Development
+    sidebar before merging; re-running the workflow re-checks it.
+  - `wrong-author`: the pull request was not opened by the coding agent — add the
+    closing reference manually if the link is intended.
+  - `wrong-base-branch`: re-target the pull request at the configured base branch.
+  - `already-linked` / `no-active-issue`: no action needed; the link already
+    exists or there is no active sub-issue to link.
+- **Verify:** Re-run the workflow (or reopen the pull request); a healthy run
+  reports `already-running` with reason `pull-request-linked`, or leaves an
+  already-linked pull request unchanged.
 
 ### Merged pull request that does not resolve to a completion
 

@@ -193,6 +193,94 @@ describe('GitHubRepositoryAdapter reads', () => {
     ).toBeNull();
   });
 
+  it('exposes the raw opened pull request with its author', async () => {
+    const api = new FakeGitHubApi({
+      pulls: {
+        9: {
+          number: 9,
+          merged: false,
+          mergedBy: null,
+          author: 'copilot-swe-agent',
+          baseRef: 'main',
+          headRef: 'copilot/feature',
+          body: 'Work in progress',
+          closesIssueNumbers: [],
+        },
+      },
+    });
+    expect(await adapterFor(api).getOpenedPullRequest(9)).toEqual({
+      number: 9,
+      author: 'copilot-swe-agent',
+      baseRef: 'main',
+      body: 'Work in progress',
+      closingIssueReferences: [],
+    });
+  });
+
+  it('reports a null author when the pull request has none', async () => {
+    const api = new FakeGitHubApi({
+      pulls: {
+        9: {
+          number: 9,
+          merged: false,
+          mergedBy: null,
+          baseRef: 'main',
+          headRef: 'copilot/feature',
+          body: null,
+          closesIssueNumbers: [],
+        },
+      },
+    });
+    const pr = await adapterFor(api).getOpenedPullRequest(9);
+    expect(pr?.author).toBeNull();
+  });
+
+  it('returns null for a missing opened pull request', async () => {
+    expect(
+      await adapterFor(new FakeGitHubApi()).getOpenedPullRequest(404),
+    ).toBeNull();
+  });
+
+  it('collects open issues carrying the active label across pages', async () => {
+    const api = new FakeGitHubApi({
+      issues: {
+        11: fakeIssue({ number: 11, labelNames: ['feature-loop:in-progress'] }),
+        12: fakeIssue({ number: 12, labelNames: ['feature-loop:in-progress'] }),
+        13: fakeIssue({ number: 13, labelNames: ['unrelated'] }),
+        14: fakeIssue({
+          number: 14,
+          open: false,
+          labelNames: ['feature-loop:in-progress'],
+        }),
+      },
+      pageSize: 1,
+    });
+    expect(
+      await adapterFor(api).findActiveSubIssues('feature-loop:in-progress'),
+    ).toEqual([11, 12]);
+  });
+
+  it('updates a pull-request body through the transport', async () => {
+    const api = new FakeGitHubApi({
+      pulls: {
+        9: {
+          number: 9,
+          merged: false,
+          mergedBy: null,
+          author: 'copilot-swe-agent',
+          baseRef: 'main',
+          headRef: 'copilot/feature',
+          body: 'Work',
+          closesIssueNumbers: [],
+        },
+      },
+    });
+    await adapterFor(api).updatePullRequestBody(9, 'Work\n\nCloses #11\n');
+    expect(api.updatedPulls).toEqual([
+      { pull: 9, body: 'Work\n\nCloses #11\n' },
+    ]);
+  });
+
   it('collects linked pull requests across pages', async () => {
     const api = new FakeGitHubApi({
       linkedPulls: { 11: [101, 102, 103] },

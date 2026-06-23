@@ -545,3 +545,194 @@ describe('runFeatureLoop — preflight failures', () => {
     expect(result.details.join(' ')).toContain('Copilot is not available.');
   });
 });
+
+function prOpenedRequest(prNumber: number, dryRun = false): LoopRequest {
+  return {
+    event: {
+      name: 'pull_request',
+      action: 'opened',
+      pullRequest: {
+        number: prNumber,
+        merged: false,
+        baseRef: 'main',
+        headRef: 'copilot/feature',
+        body: 'Implements the change.',
+        closingIssueReferences: [],
+      },
+    },
+    dryRun,
+  };
+}
+
+function copilotPull(
+  number: number,
+  overrides: Partial<{
+    author: string | null;
+    baseRef: string;
+    body: string | null;
+    closesIssueNumbers: number[];
+  }> = {},
+) {
+  return {
+    number,
+    merged: false,
+    mergedBy: null,
+    author: 'copilot-swe-agent',
+    baseRef: 'main',
+    headRef: 'copilot/feature',
+    body: 'Implements the change.',
+    closesIssueNumbers: [],
+    ...overrides,
+  };
+}
+
+const copilotProvider = { authorLogins: ['copilot-swe-agent', 'copilot'] };
+
+describe('runFeatureLoop — pull-request link reconciliation', () => {
+  it('links a Copilot PR to the single active sub-issue', async () => {
+    const { result, api } = await run({
+      config: epicConfig(
+        [fakeIssue({ number: 11, labelNames: [labels['in-progress']] })],
+        { pulls: { 456: copilotPull(456) } },
+      ),
+      provider: copilotProvider,
+      request: prOpenedRequest(456),
+    });
+
+    expect(result.outcome).toBe('already-running');
+    expect(result.reasonCode).toBe('pull-request-linked');
+    expect(result.issueNumber).toBe(11);
+    expect(api.updatedPulls).toEqual([
+      { pull: 456, body: 'Implements the change.\n\nCloses #11\n' },
+    ]);
+  });
+
+  it('reports the closing relationship GitHub records after the update', async () => {
+    const { api } = await run({
+      config: epicConfig(
+        [fakeIssue({ number: 11, labelNames: [labels['in-progress']] })],
+        { pulls: { 456: copilotPull(456) } },
+      ),
+      provider: copilotProvider,
+      request: prOpenedRequest(456),
+    });
+
+    const pull = await api.getPullRequest(456);
+    expect(pull?.closesIssueNumbers).toEqual([11]);
+  });
+
+  it('leaves an already-linked PR unchanged', async () => {
+    const { result, api } = await run({
+      config: epicConfig(
+        [fakeIssue({ number: 11, labelNames: [labels['in-progress']] })],
+        { pulls: { 456: copilotPull(456, { closesIssueNumbers: [11] }) } },
+      ),
+      provider: copilotProvider,
+      request: prOpenedRequest(456),
+    });
+
+    expect(result.outcome).toBe('no-op');
+    expect(result.reasonCode).toBe('already-linked');
+    expect(api.updatedPulls).toEqual([]);
+  });
+
+  it('is idempotent when the body already contains the closing line', async () => {
+    const { result, api } = await run({
+      config: epicConfig(
+        [fakeIssue({ number: 11, labelNames: [labels['in-progress']] })],
+        {
+          pulls: {
+            456: copilotPull(456, {
+              body: 'Implements the change.\n\nCloses #11\n',
+            }),
+          },
+        },
+      ),
+      provider: copilotProvider,
+      request: prOpenedRequest(456),
+    });
+
+    expect(result.outcome).toBe('no-op');
+    expect(result.reasonCode).toBe('already-linked');
+    expect(api.updatedPulls).toEqual([]);
+  });
+
+  it('ignores a PR authored by someone other than the coding agent', async () => {
+    const { result, api } = await run({
+      config: epicConfig(
+        [fakeIssue({ number: 11, labelNames: [labels['in-progress']] })],
+        { pulls: { 456: copilotPull(456, { author: 'octocat' }) } },
+      ),
+      provider: copilotProvider,
+      request: prOpenedRequest(456),
+    });
+
+    expect(result.outcome).toBe('no-op');
+    expect(result.reasonCode).toBe('wrong-author');
+    expect(api.updatedPulls).toEqual([]);
+  });
+
+  it('ignores a PR targeting the wrong base branch', async () => {
+    const { result, api } = await run({
+      config: epicConfig(
+        [fakeIssue({ number: 11, labelNames: [labels['in-progress']] })],
+        { pulls: { 456: copilotPull(456, { baseRef: 'develop' }) } },
+      ),
+      provider: copilotProvider,
+      request: prOpenedRequest(456),
+    });
+
+    expect(result.outcome).toBe('no-op');
+    expect(result.reasonCode).toBe('wrong-base-branch');
+    expect(api.updatedPulls).toEqual([]);
+  });
+
+  it('does nothing when no sub-issue is active', async () => {
+    const { result, api } = await run({
+      config: epicConfig([fakeIssue({ number: 11 })], {
+        pulls: { 456: copilotPull(456) },
+      }),
+      provider: copilotProvider,
+      request: prOpenedRequest(456),
+    });
+
+    expect(result.outcome).toBe('no-op');
+    expect(result.reasonCode).toBe('no-active-issue');
+    expect(api.updatedPulls).toEqual([]);
+  });
+
+  it('fails closed when multiple sub-issues are active', async () => {
+    const { result, api } = await run({
+      config: epicConfig(
+        [
+          fakeIssue({ number: 11, labelNames: [labels['in-progress']] }),
+          fakeIssue({ number: 12, labelNames: [labels['in-progress']] }),
+        ],
+        { pulls: { 456: copilotPull(456) } },
+      ),
+      provider: copilotProvider,
+      request: prOpenedRequest(456),
+    });
+
+    expect(result.outcome).toBe('needs-human');
+    expect(result.reasonCode).toBe('ambiguous-active-issue');
+    expect(api.updatedPulls).toEqual([]);
+  });
+
+  it('performs no writes and previews the link in dry run', async () => {
+    const { result, api } = await run({
+      config: epicConfig(
+        [fakeIssue({ number: 11, labelNames: [labels['in-progress']] })],
+        { pulls: { 456: copilotPull(456) } },
+      ),
+      provider: copilotProvider,
+      request: prOpenedRequest(456, true),
+    });
+
+    expect(result.outcome).toBe('dry-run');
+    expect(result.reasonCode).toBe('pull-request-link');
+    expect(result.issueNumber).toBe(11);
+    expect(result.details[0]).toContain('would link');
+    expect(api.updatedPulls).toEqual([]);
+  });
+});
