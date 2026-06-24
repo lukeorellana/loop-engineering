@@ -6,6 +6,11 @@ GitHub Copilot coding agent has the context it needs when the Feature Loop
 assigns it a sub-issue. Adjust the project-specific sections to match your
 repository; the Feature Loop conventions below should be preserved.
 
+Also copy [`skills/self-review/SKILL.md`](skills/self-review/SKILL.md) to
+`.github/skills/self-review/SKILL.md`. The completion contract below explicitly
+references that path so the agent uses the same structured review process for
+every Feature Loop sub-issue.
+
 ## How this repository drives work
 
 This repository uses **Feature Loop** to advance a feature epic through an
@@ -25,6 +30,25 @@ sub-issues.
   configures `base.branch`).
 - A human reviews and merges every pull request. Do not attempt to merge your
   own pull request; the loop never auto-merges.
+
+## Self-review before handoff
+
+Before requesting human review or declaring the assigned issue complete:
+
+1. Follow `.github/skills/self-review/SKILL.md`.
+2. Re-read the issue and acceptance criteria, then inspect the complete diff
+   against the base branch rather than reviewing only the files you remember
+   changing.
+3. Fix all valid findings that remain within the assigned issue and rerun the
+   affected validation.
+4. Update the pull-request summary with findings discovered, fixes made, exact
+   validation commands and outcomes, and any remaining risk or human-required
+   check.
+
+Do not treat passing tests as a substitute for reviewing the implementation.
+Do not report a generic "self-review complete" without evidence. If the skill
+is missing or the review requires a product decision, unavailable environment,
+destructive action, or broader scope, explain the blocker and stop for a human.
 
 ## Canonical state labels
 

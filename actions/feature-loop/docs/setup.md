@@ -99,6 +99,31 @@ See [`examples/feature-loop.custom-labels.yml`](../examples/feature-loop.custom-
 Coding-agent assignment may require a credential with broader scope than the
 default `GITHUB_TOKEN`. See step 6.
 
+### Install the agent instructions and self-review skill
+
+Feature Loop assigns the issue itself as the coding task. Install repository
+instructions that define how the agent must complete that task:
+
+1. Copy [`examples/copilot-instructions.md`](../examples/copilot-instructions.md)
+   to `.github/copilot-instructions.md`, or merge its Feature Loop sections into
+   an existing file.
+2. Copy
+   [`examples/skills/self-review/SKILL.md`](../examples/skills/self-review/SKILL.md)
+   to `.github/skills/self-review/SKILL.md`.
+3. Fill in the project-specific build, test, lint, formatting, and coding
+   conventions in the instruction file.
+4. Use the provided sub-issue template so each issue repeats the self-review
+   completion contract in the task itself.
+
+Before handing a pull request to a human, the agent is instructed to review the
+complete diff against the issue, actively search for correctness and regression
+risks, fix valid findings, rerun affected validation, and document evidence in
+the pull-request summary.
+
+This is intentionally an instruction-based quality gate. The Feature Loop action
+does not execute a second review agent, post automatic repair comments, or infer
+that self-review occurred. A human still reviews and merges the pull request.
+
 ## 6. Tokens: repository token vs. agent-assignment token
 
 Feature Loop uses two logical credentials:

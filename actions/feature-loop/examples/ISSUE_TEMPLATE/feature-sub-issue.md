@@ -22,6 +22,10 @@ a closing keyword scoped to this repository, for example:
 
   Closes #<this-issue-number>
 
+Before requesting review, the coding agent MUST follow the repository's
+`.github/skills/self-review/SKILL.md`, fix valid findings, rerun affected
+validation, and record review evidence in the pull-request summary.
+
 A human reviews and merges the pull request; the action never merges and never
 executes pull-request code.
 -->
@@ -40,3 +44,11 @@ executes pull-request code.
 ## Context
 
 <!-- Links, constraints, and pointers the coding agent needs. -->
+
+## Completion requirements
+
+- [ ] Implement every applicable acceptance criterion without unrelated scope expansion.
+- [ ] Run the repository's applicable build, test, lint, type-check, and formatting validation.
+- [ ] Follow `.github/skills/self-review/SKILL.md` against the complete diff and this issue.
+- [ ] Fix valid self-review findings and rerun affected validation.
+- [ ] Record self-review findings, fixes, validation evidence, and remaining human checks in the pull-request summary.

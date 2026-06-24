@@ -46,6 +46,8 @@ Copy-ready templates and examples live under [`examples/`](examples):
   — epic and sub-issue templates.
 - [`copilot-instructions.md`](examples/copilot-instructions.md) — agent
   instruction template.
+- [`skills/self-review/SKILL.md`](examples/skills/self-review/SKILL.md) —
+  structured implementation self-review before human handoff.
 
 ## Configuration
 
@@ -71,6 +73,28 @@ A complete, ready-to-copy consumer workflow — with the `workflow_dispatch` and
 `pull_request` (`closed`, `opened`, `reopened`) triggers, the merged-PR guard,
 minimal permissions, and repository-wide serialization — is provided in
 [`examples/feature-loop.workflow.yml`](examples/feature-loop.workflow.yml).
+
+### Agent self-review contract
+
+Feature Loop keeps implementation quality lightweight and repository-local. The
+action assigns a sub-issue and manages orchestration; it does not run a separate
+PR-review controller or automatically repair review findings.
+
+Consuming repositories should copy the example agent instructions and self-review
+skill to:
+
+- `.github/copilot-instructions.md`
+- `.github/skills/self-review/SKILL.md`
+
+The sub-issue template requires the coding agent to use that skill after
+implementation: re-read the issue, inspect the complete diff, challenge failure
+paths and edge cases, run applicable validation, fix valid findings, rerun
+validation, and record evidence in the pull-request summary. Human review and
+merge remain required.
+
+This is an instruction-based quality gate, not an action-enforced status check.
+Repositories that need an independent reviewer for high-risk changes can add one
+separately without coupling it to Feature Loop's orchestration state machine.
 
 ### Inputs
 
