@@ -64,9 +64,9 @@ describe('Markdown parent epic resolution', () => {
       },
     });
 
-    await expect(adapterFor(api).getParentEpicNumber(117)).rejects.toBeInstanceOf(
-      CrossRepositoryReferenceError,
-    );
+    await expect(
+      adapterFor(api).getParentEpicNumber(117),
+    ).rejects.toBeInstanceOf(CrossRepositoryReferenceError);
   });
 });
 
@@ -138,9 +138,9 @@ describe('merged PR continuation with Markdown-only issue hierarchy', () => {
     expect(result.epicNumber).toBe(108);
     expect(result.completedIssueNumber).toBe(117);
     expect(result.issueNumber).toBe(118);
-    expect(provider.startRequests.map((request) => request.issue.number)).toEqual([
-      118,
-    ]);
+    expect(
+      provider.startRequests.map((request) => request.issue.number),
+    ).toEqual([118]);
     expect(api.removedLabels).toContainEqual({
       issue: 117,
       label: labels['in-progress'],
