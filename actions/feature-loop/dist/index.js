@@ -69353,6 +69353,47 @@ function hasStatusMarker(commentBody, marker) {
 
 /** A defensive cap on paginated reads to avoid unbounded loops. */
 const MAX_PAGES = 1000;
+// Accepts both common Feature Loop forms:
+//
+//   Parent epic: #123
+//
+// and:
+//
+//   ## Parent epic
+//
+//   - #123
+//
+// References may be bare, owner/repo#number, or full GitHub issue URLs. The
+// repository-scoped forms are validated before the adapter trusts them.
+const PARENT_EPIC_REFERENCE = /(?:^|\r?\n)\s*(?:[-*+]\s*)?(?:#{1,6}\s+)?parent\s+epic\s*:?\s*(?:[-*+]\s*)?(?:https?:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/issues\/(\d+)|([\w.-]+)\/([\w.-]+)#(\d+)|#(\d+))/i;
+function repository_adapter_sameRepository(owner, name, repo) {
+    return (owner.toLowerCase() === repo.owner.toLowerCase() &&
+        name.toLowerCase() === repo.name.toLowerCase());
+}
+function parseParentEpicReference(body, repo) {
+    if (!body) {
+        return { ok: true, number: null };
+    }
+    const match = PARENT_EPIC_REFERENCE.exec(body);
+    if (match === null) {
+        return { ok: true, number: null };
+    }
+    const [, urlOwner, urlRepo, urlNumber, shortOwner, shortRepo, shortNumber] = match;
+    const bareNumber = match[7];
+    if (urlNumber !== undefined) {
+        if (!repository_adapter_sameRepository(urlOwner, urlRepo, repo)) {
+            return { ok: false, found: `${urlOwner}/${urlRepo}` };
+        }
+        return { ok: true, number: Number(urlNumber) };
+    }
+    if (shortNumber !== undefined) {
+        if (!repository_adapter_sameRepository(shortOwner, shortRepo, repo)) {
+            return { ok: false, found: `${shortOwner}/${shortRepo}` };
+        }
+        return { ok: true, number: Number(shortNumber) };
+    }
+    return { ok: true, number: Number(bareNumber) };
+}
 class GitHubRepositoryAdapter {
     api;
     labels;
@@ -69441,7 +69482,23 @@ class GitHubRepositoryAdapter {
         return refs.map((ref) => ref.number);
     }
     async getParentEpicNumber(issueNumber) {
-        return this.run('get parent issue', () => this.api.getParentIssueNumber(issueNumber));
+        const nativeParent = await this.run('get parent issue', () => this.api.getParentIssueNumber(issueNumber));
+        if (nativeParent !== null) {
+            return nativeParent;
+        }
+        const [repo, issue] = await Promise.all([
+            this.run('get repository', () => this.api.getRepository()),
+            this.run('get issue for parent epic', () => this.api.getIssue(issueNumber)),
+        ]);
+        const result = parseParentEpicReference(issue?.body, {
+            owner: repo.owner,
+            name: repo.name,
+        });
+        if (!result.ok) {
+            throw new CrossRepositoryReferenceError(`Cross-repository parent epic reference to "${result.found}" is not allowed. ` +
+                `Only references within "${repo.owner}/${repo.name}" are supported.`);
+        }
+        return result.number;
     }
     async getMarkdownSubIssueNumbers(epicNumber, heading) {
         const repo = await this.run('get repository', () => this.api.getRepository());
@@ -69473,8 +69530,8 @@ class GitHubRepositoryAdapter {
         }
         let epicNumber = 0;
         if (pr.closesIssueNumbers.length > 0) {
-            const parent = await this.run('get parent issue', () => this.api.getParentIssueNumber(pr.closesIssueNumbers[0]));
-            epicNumber = parent ?? 0;
+            epicNumber =
+                (await this.getParentEpicNumber(pr.closesIssueNumbers[0])) ?? 0;
         }
         return {
             pullRequestNumber: pr.number,
