@@ -6,13 +6,14 @@ outcome, and reason code. It matches the bundled action interface
 
 ## Action inputs
 
-| Input          | Required | Default                    | Description                                                                                                   |
-| -------------- | -------- | -------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `github-token` | yes      | `${{ github.token }}`      | Token for repository reads and writes (configuration, labels, status comments, closing sub-issues).           |
-| `agent-token`  | no       | `github-token`             | Token used to assign the GitHub Copilot coding agent. Empty falls back to `github-token`.                     |
-| `epic-issue`   | no       | —                          | Epic issue number for a manual start. Required for `workflow_dispatch`; ignored for a merged-PR continuation. |
-| `dry-run`      | no       | `false`                    | When `true`, evaluate only and perform no writes.                                                             |
-| `config-path`  | no       | `.github/feature-loop.yml` | Configuration file path on the default branch.                                                                |
+| Input                | Required | Default                    | Description                                                                                                                         |
+| -------------------- | -------- | -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `github-token`       | yes      | `${{ github.token }}`      | Token for repository reads and writes (configuration, labels, status comments, closing sub-issues).                                 |
+| `agent-token`        | no       | `github-token`             | Token used to assign the GitHub Copilot coding agent. Empty falls back to `github-token`.                                           |
+| `epic-issue`         | no       | —                          | Epic issue number for a manual start. Required for `workflow_dispatch`; ignored for a merged-PR continuation.                       |
+| `dry-run`            | no       | `false`                    | When `true`, evaluate only and perform no writes.                                                                                   |
+| `force-reinitialize` | no       | `false`                    | When `true`, a manual dispatch rewrites the frozen execution plan from the epic's ordered sub-issues. A normal rerun is idempotent. |
+| `config-path`        | no       | `.github/feature-loop.yml` | Configuration file path on the default branch.                                                                                      |
 
 Inputs are validated and fail closed. Credentials are registered as secrets so
 they are masked in logs and never printed.
@@ -59,22 +60,27 @@ these categories.
 ### Outcome-named reasons
 
 `started`, `already-running`, `complete`, `dry-run`, `configuration-error`, and
-`operational-error` use their outcome name as the reason.
+`operational-error` use their outcome name as the reason. A manual dispatch that
+cannot initialize an epic (duplicate, missing, cross-repository, or
+self-referential issue references) fails closed as `configuration-error` with
+the reason `initialization-failed`.
 
 ### Pause reasons (`outcome: needs-human`)
 
-| Reason                            | Meaning                                                                                                                                  |
-| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `blocked`                         | Head-of-line sub-issue is `blocked`.                                                                                                     |
-| `invalid`                         | Head-of-line sub-issue resolved to `invalid` (ambiguous or inconsistent state).                                                          |
-| `skipped`                         | Head-of-line sub-issue is `skipped`; the skip must be acknowledged before later work runs.                                               |
-| `needs-human`                     | Head-of-line sub-issue is explicitly `needs-human`.                                                                                      |
-| `not-planned`                     | Head-of-line sub-issue is closed as `not-planned`; ordering needs human resolution.                                                      |
-| `multiple-canonical-state-labels` | The sub-issue carries more than one canonical-state label (a refinement of `invalid`).                                                   |
-| `multiple-linked-pull-requests`   | The sub-issue has more than one linked pull request; the ambiguity needs a human.                                                        |
-| `assignment-failed`               | The coding agent could not be assigned (or confirmed assigned); a human can resume the loop.                                             |
-| `ambiguous-active-issue`          | More than one sub-issue is active (`in-progress`) when linking an opened pull request; the action cannot infer which issue it completes. |
-| `link-not-verified`               | The opened pull request body was updated, but GitHub has not yet reported the closing relationship; confirm the link before merging.     |
+| Reason                            | Meaning                                                                                                                                               |
+| --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `blocked`                         | Head-of-line sub-issue is `blocked`.                                                                                                                  |
+| `invalid`                         | Head-of-line sub-issue resolved to `invalid` (ambiguous or inconsistent state).                                                                       |
+| `skipped`                         | Head-of-line sub-issue is `skipped`; the skip must be acknowledged before later work runs.                                                            |
+| `needs-human`                     | Head-of-line sub-issue is explicitly `needs-human`.                                                                                                   |
+| `not-planned`                     | Head-of-line sub-issue is closed as `not-planned`; ordering needs human resolution.                                                                   |
+| `multiple-canonical-state-labels` | The sub-issue carries more than one canonical-state label (a refinement of `invalid`).                                                                |
+| `multiple-linked-pull-requests`   | The sub-issue has more than one linked pull request; the ambiguity needs a human.                                                                     |
+| `assignment-failed`               | The coding agent could not be assigned (or confirmed assigned); a human can resume the loop.                                                          |
+| `ambiguous-active-issue`          | More than one sub-issue is active (`in-progress`) when linking an opened pull request; the action cannot infer which issue it completes.              |
+| `link-not-verified`               | The opened pull request body was updated, but GitHub has not yet reported the closing relationship; confirm the link before merging.                  |
+| `unexpected-active-issue`         | A first-time initialization found a sub-issue already `in-progress`; the loop will not silently adopt it. Rerun with `force-reinitialize` to recover. |
+| `plan-drift`                      | A continuation run found the native sub-issue hierarchy no longer matches the frozen execution plan; reconcile it or reinitialize.                    |
 
 When a merged pull request cannot be resolved to a single trusted completion,
 the loop pauses (`needs-human`) with one of these completion-resolution reasons:

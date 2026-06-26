@@ -17,8 +17,9 @@ request before the next issue starts.
 > [`docs/adr/0002-github-repository-adapter-and-preflight.md`](docs/adr/0002-github-repository-adapter-and-preflight.md),
 > [`docs/adr/0003-trusted-merged-pr-resolution.md`](docs/adr/0003-trusted-merged-pr-resolution.md),
 > [`docs/adr/0004-github-copilot-agent-provider.md`](docs/adr/0004-github-copilot-agent-provider.md),
+> [`docs/adr/0005-transactional-orchestration-and-reconciliation.md`](docs/adr/0005-transactional-orchestration-and-reconciliation.md),
 > and
-> [`docs/adr/0005-transactional-orchestration-and-reconciliation.md`](docs/adr/0005-transactional-orchestration-and-reconciliation.md).
+> [`docs/adr/0006-epic-initialization-and-frozen-plan.md`](docs/adr/0006-epic-initialization-and-frozen-plan.md).
 
 ## Documentation
 
