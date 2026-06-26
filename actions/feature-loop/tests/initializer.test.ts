@@ -502,10 +502,12 @@ describe('initializeEpic — LingoQuest race recovery (integration)', () => {
       ),
       intendedIssues: issues,
       prepare: (fake) => {
-        // The first hierarchy reread is temporarily incomplete (the last two
-        // children are not yet visible), and the first reprioritize fails
-        // transiently before succeeding.
-        fake.nativeVisibilityDelay = 1;
+        // The first post-attach hierarchy reread is temporarily incomplete (the
+        // last two children are not yet visible), and the first reprioritize
+        // fails transiently before succeeding. (Call #1 is the pre-attach
+        // planning read of the empty epic, so a delay of 2 hides on the first
+        // convergence poll.)
+        fake.nativeVisibilityDelay = 2;
         fake.hiddenUntilVisible = [207, 208];
         fake.reprioritizeFailures = 1;
       },
