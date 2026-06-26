@@ -3,8 +3,9 @@
  *
  * {@link buildStepSummary} turns a loop result into a compact Markdown summary
  * suitable for `GITHUB_STEP_SUMMARY`. It distinguishes dry-run previews from
- * applied results and lists the sanitized detail lines the loop produced, so a
- * reader can see what happened (or would happen) without opening the run log.
+ * applied results and lists the sanitized notice and detail lines the loop
+ * produced, so a reader can see what happened (or would happen) without opening
+ * the run log.
  */
 
 import type { OrchestratorResult } from '../orchestrator/index.js';
@@ -49,6 +50,13 @@ export function buildStepSummary(result: OrchestratorResult): string {
   }
   if (result.completedIssueNumber !== undefined) {
     summary += row('Completed issue', `#${result.completedIssueNumber}`);
+  }
+
+  if ((result.notices?.length ?? 0) > 0) {
+    summary += '\n### Notices\n\n';
+    for (const notice of result.notices ?? []) {
+      summary += `- ${escapeCell(notice)}\n`;
+    }
   }
 
   if (result.details.length > 0) {

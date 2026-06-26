@@ -112,6 +112,20 @@ function seededPlan(epicNumber: number, issues: number[]) {
   };
 }
 
+function markdownConfig(body: string, overrides: Partial<FakeConfig> = {}) {
+  return {
+    issues: {
+      1: fakeIssue({ number: 1, title: 'Epic', body }),
+      11: fakeIssue({ number: 11 }),
+      12: fakeIssue({ number: 12 }),
+    },
+    subIssues: { 1: [] },
+    branches: ['main'],
+    repoLabels: allLabelNames,
+    ...overrides,
+  };
+}
+
 function closedDone(number: number, labelNames: string[] = []): FakeIssue {
   return fakeIssue({
     number,
@@ -337,35 +351,81 @@ describe('runFeatureLoop — epic initialization and frozen plan', () => {
 
   it('reports the Markdown discovery source in dry-run output', async () => {
     const { result } = await run({
-      config: {
-        issues: {
-          1: fakeIssue({
-            number: 1,
-            title: 'Epic',
-            body: [
-              '<!-- feature-loop:ordered-issues -->',
-              '## Execution sequence',
-              '',
-              '1. #11',
-              '2. #12',
-            ].join('\n'),
-          }),
-          11: fakeIssue({ number: 11 }),
-          12: fakeIssue({ number: 12 }),
-        },
-        subIssues: { 1: [] },
-        branches: ['main'],
-        repoLabels: allLabelNames,
-      },
+      config: markdownConfig(
+        [
+          '<!-- feature-loop:ordered-issues -->',
+          '## Execution sequence',
+          '',
+          '1. #11',
+          '2. #12',
+        ].join('\n'),
+      ),
       request: { ...manual, dryRun: true },
     });
 
     expect(result.dryRun).toBe(true);
     expect(
-      result.details.some((detail) =>
+      result.notices?.some((detail) =>
         detail.includes('feature-loop:ordered-issues marker'),
       ),
     ).toBe(true);
+    expect(result.details.join('\n')).not.toContain(
+      'feature-loop:ordered-issues marker',
+    );
+  });
+
+  it.each([
+    [
+      'structural',
+      ['## Child issues', '', '1. #404'].join('\n'),
+      'the structural fallback',
+    ],
+    [
+      'marker',
+      ['<!-- feature-loop:ordered-issues -->', '1. #404'].join('\n'),
+      'the feature-loop:ordered-issues marker',
+    ],
+    [
+      'configured heading',
+      ['## Ordered sub-issues', '', '1. #404'].join('\n'),
+      'the configured heading',
+    ],
+  ])(
+    'keeps %s discovery separate from a later initialization failure',
+    async (_name, body, discoveryText) => {
+      const { result } = await run({
+        config: markdownConfig(body),
+        request: manual,
+      });
+
+      expect(result.outcome).toBe('configuration-error');
+      expect(result.reasonCode).toBe('initialization-failed');
+      expect(result.details[0]).toBe(
+        'Planned sub-issue #404 was not found in this repository.',
+      );
+      expect(result.details.join('\n')).not.toContain(
+        'Ordered sub-issues discovered from Markdown',
+      );
+      expect(result.notices).toContain(
+        `Ordered sub-issues discovered from Markdown via ${discoveryText}.`,
+      );
+    },
+  );
+
+  it('keeps successful Markdown discovery visible as a notice', async () => {
+    const { result } = await run({
+      config: markdownConfig(['## Child issues', '', '1. #11'].join('\n')),
+      request: manual,
+    });
+
+    expect(result.outcome).toBe('started');
+    expect(result.issueNumber).toBe(11);
+    expect(result.notices).toContain(
+      'Ordered sub-issues discovered from Markdown via the structural fallback.',
+    );
+    expect(result.details.join('\n')).toContain(
+      'Persist the frozen execution plan for epic #1: [11].',
+    );
   });
 
   it('is idempotent on a manual rerun of an already-initialized epic', async () => {
@@ -442,6 +502,7 @@ describe('runFeatureLoop — epic initialization and frozen plan', () => {
     expect(result.outcome).toBe('started');
     expect(result.issueNumber).toBe(12);
     expect(provider.startRequests[0].issue.number).toBe(12);
+    expect(result.notices).toBeUndefined();
     // A continuation run never rewrites the frozen plan.
     expect(api.createdComments.filter((c) => c.issue === 1)).toHaveLength(0);
   });
