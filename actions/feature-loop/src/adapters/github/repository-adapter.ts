@@ -24,11 +24,16 @@ import {
 import type {
   GitHubRepositoryPort,
   IssueIdentity,
+  MarkdownSubIssueDiscovery,
   RepositoryInfo,
 } from '../../ports/github-repository.js';
 import type { ExecutionPlan } from '../../domain/plan.js';
 import type { ApiPage, GitHubApi } from './api.js';
-import { CrossRepositoryReferenceError, sanitizeError } from './errors.js';
+import {
+  CrossRepositoryReferenceError,
+  MarkdownDiscoveryError,
+  sanitizeError,
+} from './errors.js';
 import { buildStatusCommentBody, hasStatusMarker } from './status-comment.js';
 import {
   buildPlanCommentBody,
@@ -344,21 +349,26 @@ export class GitHubRepositoryAdapter implements GitHubRepositoryPort {
   async getMarkdownSubIssueNumbers(
     epicNumber: number,
     heading: string,
-  ): Promise<readonly number[]> {
+  ): Promise<MarkdownSubIssueDiscovery> {
     const repo = await this.run('get repository', () =>
       this.api.getRepository(),
     );
     const issue = await this.run('get epic', () =>
       this.api.getIssue(epicNumber),
     );
-    const result = parseMarkdownSubIssues(issue?.body, heading, {
-      owner: repo.owner,
-      name: repo.name,
-    });
+    const result = parseMarkdownSubIssues(
+      issue?.body,
+      heading,
+      { owner: repo.owner, name: repo.name },
+      epicNumber,
+    );
     if (!result.ok) {
-      throw new CrossRepositoryReferenceError(result.message);
+      if (result.reason === 'cross-repository') {
+        throw new CrossRepositoryReferenceError(result.message);
+      }
+      throw new MarkdownDiscoveryError(result.reason, result.message);
     }
-    return result.numbers;
+    return { numbers: result.numbers, source: result.discovery };
   }
 
   async getCanonicalStateLabels(

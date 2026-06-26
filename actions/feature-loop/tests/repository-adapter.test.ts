@@ -5,6 +5,7 @@ import {
   GitHubRepositoryAdapter,
   RepositoryApiError,
   CrossRepositoryReferenceError,
+  MarkdownDiscoveryError,
   hasStatusMarker,
   type GitHubApi,
 } from '../src/adapters/github/index.js';
@@ -93,7 +94,48 @@ describe('GitHubRepositoryAdapter reads', () => {
     });
     expect(
       await adapterFor(api).getMarkdownSubIssueNumbers(1, 'Ordered sub-issues'),
-    ).toEqual([11, 12]);
+    ).toEqual({ numbers: [11, 12], source: 'configured-heading' });
+  });
+
+  it('discovers a marked ordered list regardless of heading wording', async () => {
+    const api = new FakeGitHubApi({
+      issues: {
+        1: fakeIssue({
+          number: 1,
+          body: [
+            '<!-- feature-loop:ordered-issues -->',
+            '## Ordered child issues',
+            '1. #11',
+            '2. #12',
+          ].join('\n'),
+        }),
+      },
+    });
+    expect(
+      await adapterFor(api).getMarkdownSubIssueNumbers(1, 'Ordered sub-issues'),
+    ).toEqual({ numbers: [11, 12], source: 'marker' });
+  });
+
+  it('rejects an ambiguous epic with multiple ordered issue sections', async () => {
+    const api = new FakeGitHubApi({
+      issues: {
+        1: fakeIssue({
+          number: 1,
+          body: [
+            '## Implementation sequence',
+            '1. #11',
+            '2. #12',
+            '',
+            '## Feature tasks',
+            '1. #13',
+            '2. #14',
+          ].join('\n'),
+        }),
+      },
+    });
+    await expect(
+      adapterFor(api).getMarkdownSubIssueNumbers(1, 'Ordered sub-issues'),
+    ).rejects.toBeInstanceOf(MarkdownDiscoveryError);
   });
 
   it('rejects cross-repository Markdown references', async () => {

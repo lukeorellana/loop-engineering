@@ -10,9 +10,21 @@
  * checks out or executes pull-request code.
  */
 import type { Epic, PullRequestCompletionContext } from '../domain/issues.js';
+import type { MarkdownDiscoverySource } from '../domain/markdown.js';
 import type { MergedPullRequest } from '../domain/merged-pr.js';
 import type { ExecutionPlan } from '../domain/plan.js';
 import type { OpenedPullRequest } from '../domain/pr-link.js';
+
+/**
+ * The ordered sub-issue numbers discovered from the epic body's Markdown,
+ * together with how they were discovered. `source` is `none` when the body has
+ * no ordered-issue section, so callers can report whether discovery came from
+ * the marker, the configured heading, or the structural fallback.
+ */
+export interface MarkdownSubIssueDiscovery {
+  readonly numbers: readonly number[];
+  readonly source: MarkdownDiscoverySource | 'none';
+}
 
 /**
  * Identifying information about the repository, including the default branch
@@ -106,13 +118,16 @@ export interface GitHubRepositoryReadPort {
   getParentEpicNumber(issueNumber: number): Promise<number | null>;
 
   /**
-   * Ordered sub-issue numbers parsed from the epic body's Markdown section
-   * identified by `heading`.
+   * Ordered sub-issue numbers parsed from the epic body's Markdown using the
+   * marker-first discovery precedence (marker, then the configured `heading`,
+   * then a single structural ordered list), together with how they were
+   * discovered. Fails closed when discovery is ambiguous or a reference is
+   * invalid.
    */
   getMarkdownSubIssueNumbers(
     epicNumber: number,
     heading: string,
-  ): Promise<readonly number[]>;
+  ): Promise<MarkdownSubIssueDiscovery>;
 
   /**
    * The canonical state label names currently present on an issue. More than one
