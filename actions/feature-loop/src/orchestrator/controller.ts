@@ -39,6 +39,7 @@ import {
 import { resolvePullRequestLink } from '../domain/pr-link.js';
 import { detectPlanDrift } from '../domain/plan.js';
 import { decideLoop, type LoopEvaluation } from '../domain/state-machine.js';
+import type { MarkdownDiscoverySource } from '../domain/markdown.js';
 import { initializeEpic } from '../initializer/index.js';
 import { DEFAULT_CONFIG_PATH, preflight } from '../preflight/index.js';
 import type { AgentProviderPort } from '../ports/agent-provider.js';
@@ -130,6 +131,20 @@ function formatAge(milliseconds: number): string {
   return `${minutes}m`;
 }
 
+/** A human-readable description of how the Markdown list was discovered. */
+function describeDiscovery(source: MarkdownDiscoverySource | 'none'): string {
+  switch (source) {
+    case 'marker':
+      return 'the feature-loop:ordered-issues marker';
+    case 'configured-heading':
+      return 'the configured heading';
+    case 'structural':
+      return 'the structural fallback';
+    default:
+      return 'Markdown';
+  }
+}
+
 /**
  * Run one idempotent iteration of the Feature Loop.
  */
@@ -177,6 +192,11 @@ class Controller {
   // Details from epic initialization, surfaced on the final result.
   private initDetails: readonly string[] = [];
 
+  // A human-readable note describing how the Markdown ordered-issue list was
+  // discovered (marker, configured heading, or structural fallback), surfaced on
+  // the final result so dry-run output reports the discovery source.
+  private discoveryNote?: string;
+
   constructor(input: OrchestratorInput) {
     // Dry-run uses a read-only repository view so the zero-write invariant holds
     // by construction, even for code paths without an explicit dry-run guard.
@@ -195,9 +215,14 @@ class Controller {
   async run(): Promise<OrchestratorResult> {
     let result = await this.runLoop();
     // Surface initialization details (e.g. epic-initialized / already-initialized)
-    // on the final result so manual dispatch reports what the transaction did.
-    if (this.initDetails.length > 0) {
-      result = { ...result, details: [...this.initDetails, ...result.details] };
+    // and the Markdown discovery source on the final result so manual dispatch
+    // reports what the transaction did.
+    const leadingDetails = [
+      ...(this.discoveryNote !== undefined ? [this.discoveryNote] : []),
+      ...this.initDetails,
+    ];
+    if (leadingDetails.length > 0) {
+      result = { ...result, details: [...leadingDetails, ...result.details] };
     }
     // Surface the issue completed from a trusted merged pull request on every
     // exit path that continued past the completion (start, already-running,
@@ -276,6 +301,19 @@ class Controller {
     this.baseBranch = pre.baseBranch;
     this.model = modelFromConfig(pre.config.agent.model);
     this.issues = pre.issues;
+    // Report how the Markdown ordered-issue list was discovered during a manual
+    // initialization (or force-reinitialize). Continuation runs follow the frozen
+    // plan and do not re-derive discovery, so the note is omitted there.
+    if (
+      resolved.kind === 'manual' &&
+      pre.source === 'markdown' &&
+      pre.markdownDiscovery !== undefined &&
+      pre.markdownDiscovery !== 'none'
+    ) {
+      this.discoveryNote = `Ordered sub-issues discovered from Markdown via ${describeDiscovery(
+        pre.markdownDiscovery,
+      )}.`;
+    }
     this.evaluation = {
       provider: this.provider.id,
       model: this.model,

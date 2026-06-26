@@ -19,7 +19,11 @@ import {
   type FeatureLoopConfig,
 } from '../config/index.js';
 import { resolveIssueSource, type Epic } from '../domain/index.js';
-import { CrossRepositoryReferenceError } from '../adapters/github/errors.js';
+import type { MarkdownDiscoverySource } from '../domain/markdown.js';
+import {
+  CrossRepositoryReferenceError,
+  MarkdownDiscoveryError,
+} from '../adapters/github/errors.js';
 import type { GitHubRepositoryPort } from '../ports/github-repository.js';
 
 /** The default location of the configuration file on the default branch. */
@@ -61,6 +65,13 @@ export interface PreflightSuccess {
   readonly epic: Epic;
   readonly source: 'native' | 'markdown';
   readonly issues: readonly number[];
+  /**
+   * How the Markdown ordered-issue list was discovered, when the controlling
+   * source is `markdown`. Reported in dry-run output so authors can see whether
+   * discovery came from the marker, the configured heading, or the structural
+   * fallback.
+   */
+  readonly markdownDiscovery?: MarkdownDiscoverySource | 'none';
   readonly baseBranch: string;
   /** Labels created during preflight because `labels.auto-create` was enabled. */
   readonly createdLabels: readonly string[];
@@ -141,18 +152,24 @@ export async function preflight(
   // Ordered sub-issues: resolve the controlling source.
   let native: readonly number[] = [];
   let markdown: readonly number[] = [];
+  let markdownDiscovery: MarkdownDiscoverySource | 'none' = 'none';
   try {
     native = await repository.getNativeSubIssueNumbers(input.epicNumber);
   } catch (error) {
     return operationalError(error);
   }
   try {
-    markdown = await repository.getMarkdownSubIssueNumbers(
+    const discovered = await repository.getMarkdownSubIssueNumbers(
       input.epicNumber,
       config.issues.markdown.heading,
     );
+    markdown = discovered.numbers;
+    markdownDiscovery = discovered.source;
   } catch (error) {
-    if (error instanceof CrossRepositoryReferenceError) {
+    if (
+      error instanceof CrossRepositoryReferenceError ||
+      error instanceof MarkdownDiscoveryError
+    ) {
       messages.push(error.message);
     } else {
       return operationalError(error);
@@ -242,6 +259,7 @@ export async function preflight(
     epic,
     source,
     issues,
+    ...(source === 'markdown' ? { markdownDiscovery } : {}),
     baseBranch,
     createdLabels,
   };

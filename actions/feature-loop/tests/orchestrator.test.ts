@@ -303,6 +303,71 @@ describe('runFeatureLoop — epic initialization and frozen plan', () => {
     expect(planComment?.body).toContain(epicPlanMarker(1));
   });
 
+  it('initializes an unlinked epic discovered via a Markdown ordered list heading', async () => {
+    // No native sub-issues are linked yet; the epic body lists them under a
+    // heading whose wording differs from the configured default. Structural
+    // discovery finds the ordered list and initialization links and freezes it.
+    const { result, api, provider } = await run({
+      config: {
+        issues: {
+          1: fakeIssue({
+            number: 1,
+            title: 'Epic',
+            body: ['## Ordered child issues', '', '1. #11', '2. #12'].join(
+              '\n',
+            ),
+          }),
+          11: fakeIssue({ number: 11 }),
+          12: fakeIssue({ number: 12 }),
+        },
+        subIssues: { 1: [] },
+        branches: ['main'],
+        repoLabels: allLabelNames,
+      },
+      request: manual,
+    });
+
+    expect(result.outcome).toBe('started');
+    expect(result.issueNumber).toBe(11);
+    expect(provider.startRequests[0].issue.number).toBe(11);
+    // The frozen plan is persisted on the epic with the discovered order.
+    const planComment = api.createdComments.find((c) => c.issue === 1);
+    expect(planComment?.body).toContain(epicPlanMarker(1));
+  });
+
+  it('reports the Markdown discovery source in dry-run output', async () => {
+    const { result } = await run({
+      config: {
+        issues: {
+          1: fakeIssue({
+            number: 1,
+            title: 'Epic',
+            body: [
+              '<!-- feature-loop:ordered-issues -->',
+              '## Execution sequence',
+              '',
+              '1. #11',
+              '2. #12',
+            ].join('\n'),
+          }),
+          11: fakeIssue({ number: 11 }),
+          12: fakeIssue({ number: 12 }),
+        },
+        subIssues: { 1: [] },
+        branches: ['main'],
+        repoLabels: allLabelNames,
+      },
+      request: { ...manual, dryRun: true },
+    });
+
+    expect(result.dryRun).toBe(true);
+    expect(
+      result.details.some((detail) =>
+        detail.includes('feature-loop:ordered-issues marker'),
+      ),
+    ).toBe(true);
+  });
+
   it('is idempotent on a manual rerun of an already-initialized epic', async () => {
     const { result, api } = await run({
       config: epicConfig(

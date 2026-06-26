@@ -68,6 +68,31 @@ describe('preflight success', () => {
     if (result.ok) {
       expect(result.source).toBe('markdown');
       expect(result.issues).toEqual([11, 12]);
+      expect(result.markdownDiscovery).toBe('configured-heading');
+    }
+  });
+
+  it('discovers an ordered list under an arbitrary heading via the structural fallback', async () => {
+    const config = baseConfig({
+      issues: {
+        1: fakeIssue({
+          number: 1,
+          body: ['## Ordered child issues', '', '1. #11', '2. #12'].join('\n'),
+        }),
+        11: fakeIssue({ number: 11 }),
+        12: fakeIssue({ number: 12 }),
+      },
+      subIssues: { 1: [] },
+    });
+    const result = await preflight({
+      repository: repositoryFor(config),
+      epicNumber: 1,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.source).toBe('markdown');
+      expect(result.issues).toEqual([11, 12]);
+      expect(result.markdownDiscovery).toBe('structural');
     }
   });
 
@@ -186,6 +211,41 @@ describe('preflight failures', () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.messages.join('\n')).toMatch(/Cross-repository/);
+    }
+  });
+
+  it('fails closed when the epic has multiple ordered issue sections', async () => {
+    const config = baseConfig({
+      issues: {
+        1: fakeIssue({
+          number: 1,
+          body: [
+            '## Implementation sequence',
+            '1. #11',
+            '2. #12',
+            '',
+            '## Feature tasks',
+            '1. #13',
+            '2. #14',
+          ].join('\n'),
+        }),
+        11: fakeIssue({ number: 11 }),
+        12: fakeIssue({ number: 12 }),
+        13: fakeIssue({ number: 13 }),
+        14: fakeIssue({ number: 14 }),
+      },
+      subIssues: { 1: [] },
+    });
+    const result = await preflight({
+      repository: repositoryFor(config),
+      epicNumber: 1,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.kind).toBe('configuration-error');
+      expect(result.messages.join('\n')).toMatch(
+        /multiple possible ordered issue sections/,
+      );
     }
   });
 

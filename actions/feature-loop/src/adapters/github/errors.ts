@@ -78,6 +78,24 @@ export class CrossRepositoryReferenceError extends Error {
   }
 }
 
+/**
+ * An error raised when ordered-issue discovery from the epic body fails closed
+ * for a reason other than a cross-repository reference — for example multiple or
+ * empty markers, ambiguous structural candidates, or a duplicate or
+ * self-referential issue number. The message is derived from the epic body
+ * structure only and is safe to surface; it carries the stable `reason` so the
+ * caller can report it without re-deriving it.
+ */
+export class MarkdownDiscoveryError extends Error {
+  readonly reason: string;
+
+  constructor(reason: string, message: string) {
+    super(message);
+    this.name = 'MarkdownDiscoveryError';
+    this.reason = reason;
+  }
+}
+
 function statusOf(error: unknown): number | null {
   if (typeof error === 'object' && error !== null && 'status' in error) {
     const status = (error as { status?: unknown }).status;

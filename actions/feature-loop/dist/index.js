@@ -69103,6 +69103,22 @@ class CrossRepositoryReferenceError extends Error {
         this.name = 'CrossRepositoryReferenceError';
     }
 }
+/**
+ * An error raised when ordered-issue discovery from the epic body fails closed
+ * for a reason other than a cross-repository reference — for example multiple or
+ * empty markers, ambiguous structural candidates, or a duplicate or
+ * self-referential issue number. The message is derived from the epic body
+ * structure only and is safe to surface; it carries the stable `reason` so the
+ * caller can report it without re-deriving it.
+ */
+class MarkdownDiscoveryError extends Error {
+    reason;
+    constructor(reason, message) {
+        super(message);
+        this.name = 'MarkdownDiscoveryError';
+        this.reason = reason;
+    }
+}
 function statusOf(error) {
     if (typeof error === 'object' && error !== null && 'status' in error) {
         const status = error.status;
@@ -69199,16 +69215,39 @@ function resolveIssueSource(source, native, markdown) {
 /**
  * Pure Markdown parsing for epic bodies.
  *
- * The loop can discover ordered sub-issues from a Markdown section of the epic
- * body. This module is pure: it takes the epic body text, the configured
- * heading, and the repository identity, and returns the ordered issue numbers it
- * finds within that section. It performs no I/O.
+ * The loop can discover the ordered sub-issue list from a Markdown section of
+ * the epic body. This module is pure: it takes the epic body text, the
+ * configured heading, the repository identity, and the epic number, and returns
+ * the ordered issue numbers it finds. It performs no I/O.
  *
- * Two rules are enforced here so that adapters cannot bypass them:
- * - References are scoped to the configured heading's section only.
+ * Discovery follows a strict precedence so that newly authored epics have a
+ * stable machine contract while existing epics keep working:
+ *
+ *   1. A single machine-readable marker (`<!-- feature-loop:ordered-issues -->`)
+ *      identifies the authoritative ordered-issue section, regardless of the
+ *      heading wording that follows it.
+ *   2. Otherwise the exact configured heading is used (backward compatible).
+ *   3. Otherwise exactly one structurally valid section — a heading followed by
+ *      an ordered list of issue references — is used.
+ *   4. No candidates yields an empty list with an actionable diagnostic.
+ *   5. Multiple candidates (or multiple markers) fail closed as ambiguous.
+ *
+ * Several rules are enforced here so adapters cannot bypass them and so every
+ * mode follows identical validation:
+ * - References are scoped to the selected section only.
  * - Cross-repository references are rejected in v1 (fail closed).
+ * - Duplicate and self-referential issue numbers fail closed.
+ * - Markers and headings inside fenced code blocks are ignored.
  */
 const HEADING_LINE = /^(#{1,6})\s+(.*?)\s*#*\s*$/;
+// The authoritative parser marker. Recognized only on its own line (after
+// optional leading/trailing whitespace) and outside fenced code blocks, so
+// marker-like text inside code fences or blockquotes is never authoritative.
+const MARKER_LINE = /^\s*<!--\s*feature-loop:ordered-issues\s*-->\s*$/;
+// Opening or closing fence for a fenced code block (``` or ~~~).
+const FENCE_LINE = /^\s*(`{3,}|~{3,})/;
+// An ordered-list item: `1.`, `1)`, `2.`, etc., capturing the item text.
+const ORDERED_ITEM = /^\s*\d+[.)]\s+(.*\S.*)$/;
 // Matches an issue reference as one of:
 //   - a full GitHub issue URL:  https://github.com/<owner>/<repo>/issues/<n>
 //   - an owner/repo shorthand:  <owner>/<repo>#<n>
@@ -69224,19 +69263,210 @@ function sameRepository(owner, name, repo) {
         name.toLowerCase() === repo.name.toLowerCase());
 }
 /**
- * Extract the lines belonging to the section introduced by `heading`.
- *
- * The section starts after the first heading line whose text matches `heading`
- * (case-insensitively) and ends at the next heading line of any level, or at the
- * end of the body. Returns `null` when no matching heading exists.
+ * Scan the body into annotated lines, tracking fenced code blocks so headings
+ * and markers inside fences are not treated as structure.
  */
-function extractSection(body, heading) {
-    const target = normalizeHeading(heading);
+function scanLines(body) {
     const lines = body.split(/\r?\n/);
+    const scanned = [];
+    let inFence = false;
+    for (const text of lines) {
+        if (FENCE_LINE.test(text)) {
+            // The fence delimiter line itself is part of the code-block boundary.
+            scanned.push({
+                text,
+                code: true,
+                headingLevel: null,
+                headingText: null,
+                marker: false,
+            });
+            inFence = !inFence;
+            continue;
+        }
+        if (inFence) {
+            scanned.push({
+                text,
+                code: true,
+                headingLevel: null,
+                headingText: null,
+                marker: false,
+            });
+            continue;
+        }
+        const heading = HEADING_LINE.exec(text);
+        scanned.push({
+            text,
+            code: false,
+            headingLevel: heading ? heading[1].length : null,
+            headingText: heading ? heading[2] : null,
+            marker: MARKER_LINE.test(text),
+        });
+    }
+    return scanned;
+}
+/**
+ * The text used for ordered-list and reference detection: the raw line text,
+ * but blank for fenced-code lines so example lists inside code fences are never
+ * treated as structure.
+ */
+function contentText(line) {
+    return line.code ? '' : line.text;
+}
+function parseReferenceMatch(match, repo) {
+    const [, urlOwner, urlRepo, urlNumber, shortOwner, shortRepo, shortNumber] = match;
+    const bareNumber = match[7];
+    if (urlNumber !== undefined) {
+        if (!sameRepository(urlOwner, urlRepo, repo)) {
+            return { kind: 'cross', found: `${urlOwner}/${urlRepo}` };
+        }
+        return { kind: 'same', number: Number(urlNumber) };
+    }
+    if (shortNumber !== undefined) {
+        if (!sameRepository(shortOwner, shortRepo, repo)) {
+            return { kind: 'cross', found: `${shortOwner}/${shortRepo}` };
+        }
+        return { kind: 'same', number: Number(shortNumber) };
+    }
+    return { kind: 'same', number: Number(bareNumber) };
+}
+/** Every issue reference found in `text`, in first-appearance order. */
+function referenceMatches(text) {
+    const matches = [];
+    REFERENCE.lastIndex = 0;
+    let match;
+    while ((match = REFERENCE.exec(text)) !== null) {
+        matches.push(match);
+    }
+    return matches;
+}
+/**
+ * Validate an ordered set of resolved references and produce the final numbers.
+ * Centralized so marker, configured-heading, and structural modes fail closed
+ * on identical rules: cross-repository, self-reference, and duplicates.
+ */
+function buildNumbers(references, repo, epicNumber) {
+    const numbers = [];
+    const seen = new Set();
+    for (const reference of references) {
+        if (reference.kind === 'cross') {
+            return { ok: false, result: crossRepository(reference.found, repo) };
+        }
+        const number = reference.number;
+        if (epicNumber !== undefined && number === epicNumber) {
+            return { ok: false, result: selfReferential(number) };
+        }
+        if (seen.has(number)) {
+            return { ok: false, result: duplicateReference(number) };
+        }
+        seen.add(number);
+        numbers.push(number);
+    }
+    return { ok: true, numbers };
+}
+/**
+ * Extract the ordered references from a section's content lines when, and only
+ * when, the content forms a qualifying ordered issue list: a consecutive
+ * ordered list (`1.`, `1)`, ...) in which every item carries exactly one issue
+ * reference. Returns `null` when the content is not such a list (for example a
+ * bullet/checklist or an ordered list of prose), so generic dependency or
+ * acceptance-criteria sections are never selected.
+ */
+function orderedListReferences(lines, repo) {
+    const runs = [];
+    let run = [];
+    for (const line of lines) {
+        const item = ORDERED_ITEM.exec(line);
+        if (item) {
+            run.push(item[1]);
+            continue;
+        }
+        if (line.trim() === '') {
+            // Blank lines do not break a loose ordered list.
+            continue;
+        }
+        if (run.length > 0) {
+            runs.push(run);
+            run = [];
+        }
+    }
+    if (run.length > 0) {
+        runs.push(run);
+    }
+    for (const candidate of runs) {
+        const references = [];
+        let qualifies = true;
+        for (const itemText of candidate) {
+            const matches = referenceMatches(itemText);
+            if (matches.length !== 1) {
+                // An ordered item with no reference (prose) or multiple references is
+                // not a clean one-issue-per-item list.
+                qualifies = false;
+                break;
+            }
+            references.push(parseReferenceMatch(matches[0], repo));
+        }
+        if (qualifies && references.length > 0) {
+            return references;
+        }
+    }
+    return null;
+}
+/**
+ * Parse the ordered sub-issue numbers from the epic `body`.
+ *
+ * Numbers are returned in first-appearance order. Discovery precedence is
+ * marker, then the exact configured `heading`, then a single structural
+ * candidate. Ambiguous markers or structural candidates fail closed, as do
+ * cross-repository, duplicate, and self-referential references. A body with no
+ * candidate section yields an empty list (`discovery: 'none'`).
+ */
+function parseMarkdownSubIssues(body, heading, repo, epicNumber) {
+    if (!body) {
+        return { ok: true, numbers: [], discovery: 'none' };
+    }
+    const scanned = scanLines(body);
+    // 1. Machine-readable marker takes precedence over everything else.
+    const markerIndices = [];
+    for (let i = 0; i < scanned.length; i += 1) {
+        if (scanned[i].marker) {
+            markerIndices.push(i);
+        }
+    }
+    if (markerIndices.length > 1) {
+        return multipleMarkers();
+    }
+    if (markerIndices.length === 1) {
+        return discoverFromMarker(scanned, markerIndices[0], repo, epicNumber);
+    }
+    // 2. Exact configured heading (backward compatible, lenient extraction).
+    const configured = extractConfiguredSection(scanned, heading);
+    if (configured !== null) {
+        const references = referenceMatches(configured).map((match) => parseReferenceMatch(match, repo));
+        const built = buildNumbers(references, repo, epicNumber);
+        if (!built.ok) {
+            return built.result;
+        }
+        return {
+            ok: true,
+            numbers: built.numbers,
+            discovery: 'configured-heading',
+        };
+    }
+    // 3. Structural fallback: exactly one heading followed by an ordered list.
+    return discoverStructural(scanned, repo, epicNumber);
+}
+/**
+ * Extract the text of the section introduced by the configured `heading`. The
+ * section starts after the first matching heading and ends at the next heading
+ * of any level, or end of body. Returns `null` when no matching heading exists.
+ */
+function extractConfiguredSection(scanned, heading) {
+    const target = normalizeHeading(heading);
     let start = -1;
-    for (let i = 0; i < lines.length; i += 1) {
-        const match = HEADING_LINE.exec(lines[i]);
-        if (match && normalizeHeading(match[2]) === target) {
+    for (let i = 0; i < scanned.length; i += 1) {
+        const line = scanned[i];
+        if (line.headingText !== null &&
+            normalizeHeading(line.headingText) === target) {
             start = i + 1;
             break;
         }
@@ -69245,59 +69475,96 @@ function extractSection(body, heading) {
         return null;
     }
     const collected = [];
-    for (let i = start; i < lines.length; i += 1) {
-        if (HEADING_LINE.test(lines[i])) {
+    for (let i = start; i < scanned.length; i += 1) {
+        if (scanned[i].headingLevel !== null) {
             break;
         }
-        collected.push(lines[i]);
+        collected.push(contentText(scanned[i]));
     }
     return collected.join('\n');
 }
 /**
- * Parse the ordered sub-issue numbers from the Markdown section identified by
- * `heading` in the epic `body`.
- *
- * Numbers are returned in first-appearance order with duplicates removed. A
- * missing section yields an empty list. A reference to any other repository
- * fails closed with a `cross-repository` result.
+ * Resolve the ordered-issue list selected by the single active marker. The
+ * marker selects the following section: parsing the heading that follows it (or
+ * a list immediately after it) and stopping at the next heading of the same or
+ * higher level, another marker, or end of body.
  */
-function parseMarkdownSubIssues(body, heading, repo) {
-    if (!body) {
-        return { ok: true, numbers: [] };
+function discoverFromMarker(scanned, markerIndex, repo, epicNumber) {
+    let cursor = markerIndex + 1;
+    // Skip blank lines between the marker and the section it introduces.
+    while (cursor < scanned.length && scanned[cursor].text.trim() === '') {
+        cursor += 1;
     }
-    const section = extractSection(body, heading);
-    if (section === null) {
-        return { ok: true, numbers: [] };
+    let anchorLevel = null;
+    let contentStart = cursor;
+    if (cursor < scanned.length && scanned[cursor].headingLevel !== null) {
+        anchorLevel = scanned[cursor].headingLevel;
+        contentStart = cursor + 1;
     }
-    const numbers = [];
-    const seen = new Set();
-    REFERENCE.lastIndex = 0;
-    let match;
-    while ((match = REFERENCE.exec(section)) !== null) {
-        const [, urlOwner, urlRepo, urlNumber, shortOwner, shortRepo, shortNumber] = match;
-        const bareNumber = match[7];
-        let number;
-        if (urlNumber !== undefined) {
-            if (!sameRepository(urlOwner, urlRepo, repo)) {
-                return crossRepository(`${urlOwner}/${urlRepo}`, repo);
+    const contentLines = [];
+    for (let i = contentStart; i < scanned.length; i += 1) {
+        const line = scanned[i];
+        if (line.marker) {
+            break;
+        }
+        if (line.headingLevel !== null) {
+            if (anchorLevel === null || line.headingLevel <= anchorLevel) {
+                break;
             }
-            number = Number(urlNumber);
         }
-        else if (shortNumber !== undefined) {
-            if (!sameRepository(shortOwner, shortRepo, repo)) {
-                return crossRepository(`${shortOwner}/${shortRepo}`, repo);
+        contentLines.push(contentText(line));
+    }
+    const references = orderedListReferences(contentLines, repo);
+    if (references === null || references.length === 0) {
+        return markerEmpty();
+    }
+    const built = buildNumbers(references, repo, epicNumber);
+    if (!built.ok) {
+        return built.result;
+    }
+    return { ok: true, numbers: built.numbers, discovery: 'marker' };
+}
+/**
+ * Enumerate every heading section that structurally looks like an ordered issue
+ * list and select the single candidate. Zero candidates yields an empty list;
+ * more than one fails closed as ambiguous, naming the candidate headings and
+ * their line numbers.
+ */
+function discoverStructural(scanned, repo, epicNumber) {
+    const candidates = [];
+    for (let i = 0; i < scanned.length; i += 1) {
+        const line = scanned[i];
+        if (line.headingLevel === null || line.headingText === null) {
+            continue;
+        }
+        const contentLines = [];
+        for (let j = i + 1; j < scanned.length; j += 1) {
+            if (scanned[j].headingLevel !== null) {
+                break;
             }
-            number = Number(shortNumber);
+            contentLines.push(contentText(scanned[j]));
         }
-        else {
-            number = Number(bareNumber);
-        }
-        if (!seen.has(number)) {
-            seen.add(number);
-            numbers.push(number);
+        const references = orderedListReferences(contentLines, repo);
+        if (references !== null && references.length > 0) {
+            candidates.push({
+                heading: line.headingText.trim(),
+                headingLevel: line.headingLevel,
+                startLine: i + 1,
+                references,
+            });
         }
     }
-    return { ok: true, numbers };
+    if (candidates.length === 0) {
+        return { ok: true, numbers: [], discovery: 'none' };
+    }
+    if (candidates.length > 1) {
+        return ambiguousSections(candidates);
+    }
+    const built = buildNumbers(candidates[0].references, repo, epicNumber);
+    if (!built.ok) {
+        return built.result;
+    }
+    return { ok: true, numbers: built.numbers, discovery: 'structural' };
 }
 function crossRepository(found, repo) {
     return {
@@ -69305,6 +69572,50 @@ function crossRepository(found, repo) {
         reason: 'cross-repository',
         message: `Cross-repository sub-issue reference to "${found}" is not allowed in v1. ` +
             `Only references within "${repo.owner}/${repo.name}" are supported.`,
+    };
+}
+function duplicateReference(number) {
+    return {
+        ok: false,
+        reason: 'duplicate-ordered-issue-reference',
+        message: `Ordered issue #${number} is referenced more than once. ` +
+            'Each issue may appear at most once in the ordered list.',
+    };
+}
+function selfReferential(number) {
+    return {
+        ok: false,
+        reason: 'self-referential-ordered-issue',
+        message: `The ordered issue list references the epic itself (#${number}). ` +
+            'An epic cannot be one of its own ordered sub-issues.',
+    };
+}
+function markerEmpty() {
+    return {
+        ok: false,
+        reason: 'ordered-issues-marker-empty',
+        message: 'The <!-- feature-loop:ordered-issues --> marker is not followed by an ordered ' +
+            'list of issue references. Add a numbered list of same-repository issues after the marker.',
+    };
+}
+function multipleMarkers() {
+    return {
+        ok: false,
+        reason: 'multiple-ordered-issues-markers',
+        message: 'The epic body contains more than one <!-- feature-loop:ordered-issues --> marker. ' +
+            'Keep exactly one marker before the authoritative ordered issue section.',
+    };
+}
+function ambiguousSections(candidates) {
+    const list = candidates
+        .map((candidate) => `- "${candidate.heading}" at line ${candidate.startLine}`)
+        .join('\n');
+    return {
+        ok: false,
+        reason: 'ambiguous-ordered-issue-sections',
+        message: 'The epic contains multiple possible ordered issue sections:\n' +
+            `${list}\n` +
+            'Add <!-- feature-loop:ordered-issues --> before the authoritative section.',
     };
 }
 
@@ -69786,14 +70097,14 @@ class GitHubRepositoryAdapter {
     async getMarkdownSubIssueNumbers(epicNumber, heading) {
         const repo = await this.run('get repository', () => this.api.getRepository());
         const issue = await this.run('get epic', () => this.api.getIssue(epicNumber));
-        const result = parseMarkdownSubIssues(issue?.body, heading, {
-            owner: repo.owner,
-            name: repo.name,
-        });
+        const result = parseMarkdownSubIssues(issue?.body, heading, { owner: repo.owner, name: repo.name }, epicNumber);
         if (!result.ok) {
-            throw new CrossRepositoryReferenceError(result.message);
+            if (result.reason === 'cross-repository') {
+                throw new CrossRepositoryReferenceError(result.message);
+            }
+            throw new MarkdownDiscoveryError(result.reason, result.message);
         }
-        return result.numbers;
+        return { numbers: result.numbers, source: result.discovery };
     }
     async getCanonicalStateLabels(issueNumber, canonicalLabels) {
         const canonical = new Set(canonicalLabels);
@@ -71947,6 +72258,7 @@ async function preflight(input) {
     // Ordered sub-issues: resolve the controlling source.
     let native = [];
     let markdown = [];
+    let markdownDiscovery = 'none';
     try {
         native = await repository.getNativeSubIssueNumbers(input.epicNumber);
     }
@@ -71954,10 +72266,13 @@ async function preflight(input) {
         return operationalError(error);
     }
     try {
-        markdown = await repository.getMarkdownSubIssueNumbers(input.epicNumber, config.issues.markdown.heading);
+        const discovered = await repository.getMarkdownSubIssueNumbers(input.epicNumber, config.issues.markdown.heading);
+        markdown = discovered.numbers;
+        markdownDiscovery = discovered.source;
     }
     catch (error) {
-        if (error instanceof CrossRepositoryReferenceError) {
+        if (error instanceof CrossRepositoryReferenceError ||
+            error instanceof MarkdownDiscoveryError) {
             messages.push(error.message);
         }
         else {
@@ -72041,6 +72356,7 @@ async function preflight(input) {
         epic,
         source,
         issues,
+        ...(source === 'markdown' ? { markdownDiscovery } : {}),
         baseBranch,
         createdLabels,
     };
@@ -72278,6 +72594,19 @@ function formatAge(milliseconds) {
     }
     return `${minutes}m`;
 }
+/** A human-readable description of how the Markdown list was discovered. */
+function describeDiscovery(source) {
+    switch (source) {
+        case 'marker':
+            return 'the feature-loop:ordered-issues marker';
+        case 'configured-heading':
+            return 'the configured heading';
+        case 'structural':
+            return 'the structural fallback';
+        default:
+            return 'Markdown';
+    }
+}
 /**
  * Run one idempotent iteration of the Feature Loop.
  */
@@ -72318,6 +72647,10 @@ class Controller {
     completedIssueNumber;
     // Details from epic initialization, surfaced on the final result.
     initDetails = [];
+    // A human-readable note describing how the Markdown ordered-issue list was
+    // discovered (marker, configured heading, or structural fallback), surfaced on
+    // the final result so dry-run output reports the discovery source.
+    discoveryNote;
     constructor(input) {
         // Dry-run uses a read-only repository view so the zero-write invariant holds
         // by construction, even for code paths without an explicit dry-run guard.
@@ -72335,9 +72668,14 @@ class Controller {
     async run() {
         let result = await this.runLoop();
         // Surface initialization details (e.g. epic-initialized / already-initialized)
-        // on the final result so manual dispatch reports what the transaction did.
-        if (this.initDetails.length > 0) {
-            result = { ...result, details: [...this.initDetails, ...result.details] };
+        // and the Markdown discovery source on the final result so manual dispatch
+        // reports what the transaction did.
+        const leadingDetails = [
+            ...(this.discoveryNote !== undefined ? [this.discoveryNote] : []),
+            ...this.initDetails,
+        ];
+        if (leadingDetails.length > 0) {
+            result = { ...result, details: [...leadingDetails, ...result.details] };
         }
         // Surface the issue completed from a trusted merged pull request on every
         // exit path that continued past the completion (start, already-running,
@@ -72409,6 +72747,15 @@ class Controller {
         this.baseBranch = pre.baseBranch;
         this.model = modelFromConfig(pre.config.agent.model);
         this.issues = pre.issues;
+        // Report how the Markdown ordered-issue list was discovered during a manual
+        // initialization (or force-reinitialize). Continuation runs follow the frozen
+        // plan and do not re-derive discovery, so the note is omitted there.
+        if (resolved.kind === 'manual' &&
+            pre.source === 'markdown' &&
+            pre.markdownDiscovery !== undefined &&
+            pre.markdownDiscovery !== 'none') {
+            this.discoveryNote = `Ordered sub-issues discovered from Markdown via ${describeDiscovery(pre.markdownDiscovery)}.`;
+        }
         this.evaluation = {
             provider: this.provider.id,
             model: this.model,

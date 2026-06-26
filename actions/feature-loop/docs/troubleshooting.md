@@ -149,7 +149,20 @@ For each situation: symptom → cause → fix → verify (run a dry run, then re
   `issues.source: native` or `issues.source: markdown`.
 - **Verify:** Dry-run; preflight should resolve a single ordered list.
 
-### Initialization failed (uninitialized epic)
+### Ambiguous or empty Markdown ordered-issue discovery
+
+- **Symptom:** `outcome: configuration-error`; the summary cites a reason such as
+  `ambiguous-ordered-issue-sections`, `multiple-ordered-issues-markers`, or
+  `ordered-issues-marker-empty`.
+- **Cause:** The epic body has more than one possible ordered-issue section (or
+  more than one marker), or a `<!-- feature-loop:ordered-issues -->` marker is not
+  followed by a valid ordered issue list.
+- **Fix:** Add a single `<!-- feature-loop:ordered-issues -->` marker immediately
+  before the authoritative ordered list. The marker wins over the configured
+  heading and any structural candidates, so it resolves ambiguity. Ensure the
+  marked list is an ordered list (`1.`, `1)`, …) with one same-repository issue
+  reference per item.
+- **Verify:** Dry-run; the summary reports discovery came from the marker.
 
 - **Symptom:** `outcome: configuration-error`, reason `initialization-failed`.
 - **Cause:** A manual run could not initialize the epic: the authored ordered

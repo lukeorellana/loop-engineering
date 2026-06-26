@@ -158,8 +158,12 @@ repository **default branch** — never from a pull-request ref. See the
    into `.github/ISSUE_TEMPLATE/` to provide a form for it.
 2. Add ordered sub-issues using one of the supported sources:
    - **Native sub-issues** — add real GitHub sub-issues to the epic.
-   - **Markdown** — list them under the heading configured by
-     `issues.markdown.heading` (default `Ordered sub-issues`).
+   - **Markdown** — list them as an ordered list, placing the marker
+     `<!-- feature-loop:ordered-issues -->` immediately before it. The marker is
+     the recommended machine contract and works regardless of the heading
+     wording; the exact configured heading (`issues.markdown.heading`, default
+     `Ordered sub-issues`) and a single structurally detected ordered list also
+     work as backward-compatible fallbacks.
    - With `issues.source: auto` (default), native sub-issues are used when
      present; otherwise the Markdown list is used. If both are non-empty and
      disagree, preflight fails closed.

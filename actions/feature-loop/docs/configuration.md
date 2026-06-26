@@ -134,18 +134,59 @@ value fails closed with a configuration error.
 
 ### `issues`
 
-| Field                     | Type   | Default              | Description                                                                              |
-| ------------------------- | ------ | -------------------- | ---------------------------------------------------------------------------------------- |
-| `issues.source`           | enum   | `auto`               | `native`, `markdown`, or `auto` (see below).                                             |
-| `issues.markdown.heading` | string | `Ordered sub-issues` | Heading whose list contains the ordered sub-issues, used in `markdown` and `auto` modes. |
+| Field                     | Type   | Default              | Description                                                                                                                                         |
+| ------------------------- | ------ | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `issues.source`           | enum   | `auto`               | `native`, `markdown`, or `auto` (see below).                                                                                                        |
+| `issues.markdown.heading` | string | `Ordered sub-issues` | Exact heading whose ordered list contains the sub-issues, used as one of the Markdown discovery methods (see below) in `markdown` and `auto` modes. |
 
 Sub-issue **sources**:
 
 - `native`: use only native GitHub sub-issues.
-- `markdown`: use only the configured Markdown section of the epic body.
+- `markdown`: use only the Markdown ordered-issue section of the epic body.
 - `auto`: use native sub-issues when non-empty; otherwise use Markdown. **If
   both are non-empty and differ, preflight fails closed** so a human resolves
   the conflict. (Identical native and Markdown lists are treated as agreeing.)
+
+#### Markdown ordered-issue discovery
+
+In `markdown` mode (and the Markdown branch of `auto`), the ordered list is
+discovered from the epic body using this precedence:
+
+1. **Marker (recommended).** A single machine-readable marker
+
+   ```html
+   <!-- feature-loop:ordered-issues -->
+   ```
+
+   placed immediately before the ordered list identifies the authoritative
+   section regardless of the heading wording that follows it. This is the stable
+   v1 contract for newly authored epics; the heading remains human-readable.
+
+2. **Configured heading.** The exact `issues.markdown.heading` (default
+   `Ordered sub-issues`) is still supported for backward compatibility.
+3. **Structural fallback.** When neither a marker nor the configured heading is
+   present, a single heading followed by an _ordered list_ of same-repository
+   issue references is detected without depending on the heading wording. Generic
+   dependency bullets and acceptance-criteria checklists are intentionally not
+   selected — only an ordered list (`1.`, `1)`, …) of issue references qualifies.
+
+Discovery **fails closed** (preflight reports an actionable diagnostic) when:
+
+- more than one marker is present (`multiple-ordered-issues-markers`),
+- a marker is not followed by an ordered issue list (`ordered-issues-marker-empty`),
+- more than one section is a structural candidate (`ambiguous-ordered-issue-sections`) —
+  add the marker before the authoritative section to resolve it,
+- a reference is duplicated (`duplicate-ordered-issue-reference`),
+- the list references the epic itself (`self-referential-ordered-issue`), or
+- a reference points at another repository (`cross-repository`).
+
+Markers and headings inside fenced code blocks or blockquotes are ignored, so
+quoted examples never become authoritative. Issue references may be written as
+full URLs (`https://github.com/owner/repo/issues/123`), `owner/repo#123`, or a
+bare `#123`. Dry-run output reports whether discovery came from the marker, the
+configured heading, or the structural fallback. Discovery applies during initial
+manual initialization and explicit `force-reinitialize`; a normal merged-PR
+continuation follows the frozen execution plan and does not re-parse Markdown.
 
 ### `agent`
 
