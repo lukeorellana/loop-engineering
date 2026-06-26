@@ -8,3 +8,4 @@ export * from './markdown.js';
 export * from './issue-state-resolution.js';
 export * from './merged-pr.js';
 export * from './pr-link.js';
+export * from './plan.js';

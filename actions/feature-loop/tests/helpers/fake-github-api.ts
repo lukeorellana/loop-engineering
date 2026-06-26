@@ -72,6 +72,17 @@ export class FakeGitHubApi implements GitHubApi {
   readonly createdComments: { issue: number; body: string }[] = [];
   readonly updatedComments: { id: number; body: string }[] = [];
   readonly updatedPulls: { pull: number; body: string }[] = [];
+  readonly addedSubIssues: {
+    parent: number;
+    sub: number;
+    replaceParent: boolean;
+  }[] = [];
+  readonly removedSubIssues: { parent: number; sub: number }[] = [];
+  readonly reprioritized: {
+    parent: number;
+    sub: number;
+    after: number | null;
+  }[] = [];
 
   constructor(private readonly config: FakeConfig = {}) {}
 
@@ -185,7 +196,7 @@ export class FakeGitHubApi implements GitHubApi {
     page: number,
   ): Promise<ApiPage<ApiNumberRef>> {
     this.record('listSubIssues', issueNumber, page);
-    const refs = (this.config.subIssues?.[issueNumber] ?? []).map((number) => ({
+    const refs = (this.subIssuesOf(issueNumber) ?? []).map((number) => ({
       number,
     }));
     return paginate(refs, this.pageSize)(page);
@@ -193,7 +204,125 @@ export class FakeGitHubApi implements GitHubApi {
 
   async getParentIssueNumber(issueNumber: number): Promise<number | null> {
     this.record('getParentIssueNumber', issueNumber);
-    return this.config.parents?.[issueNumber] ?? null;
+    return this.parentsStore().get(issueNumber) ?? null;
+  }
+
+  // Native hierarchy is stateful so the initializer's read → mutate → re-read →
+  // verify transaction can be exercised end to end against the fake.
+  private subIssueStore: Map<number, number[]> | null = null;
+  private parentStore: Map<number, number> | null = null;
+
+  private subIssuesStore(): Map<number, number[]> {
+    if (this.subIssueStore === null) {
+      this.subIssueStore = new Map();
+      for (const [key, list] of Object.entries(this.config.subIssues ?? {})) {
+        this.subIssueStore.set(Number(key), [...list]);
+      }
+    }
+    return this.subIssueStore;
+  }
+
+  private subIssuesOf(parent: number): number[] | undefined {
+    return this.subIssuesStore().get(parent);
+  }
+
+  private parentsStore(): Map<number, number> {
+    if (this.parentStore === null) {
+      this.parentStore = new Map();
+      for (const [key, value] of Object.entries(this.config.parents ?? {})) {
+        this.parentStore.set(Number(key), value);
+      }
+    }
+    return this.parentStore;
+  }
+
+  private static numberFromNodeId(nodeId: string): number {
+    return Number(nodeId.replace(/^node-/, ''));
+  }
+
+  async getIssueNodeId(issueNumber: number): Promise<string | null> {
+    this.record('getIssueNodeId', issueNumber);
+    return this.config.issues?.[issueNumber] ? `node-${issueNumber}` : null;
+  }
+
+  async addSubIssue(
+    parentId: string,
+    subIssueId: string,
+    replaceParent: boolean,
+  ): Promise<void> {
+    const parent = FakeGitHubApi.numberFromNodeId(parentId);
+    const sub = FakeGitHubApi.numberFromNodeId(subIssueId);
+    this.record('addSubIssue', parent, sub, replaceParent);
+    this.addedSubIssues.push({ parent, sub, replaceParent });
+    const parents = this.parentsStore();
+    const existingParent = parents.get(sub);
+    if (existingParent === parent) {
+      return;
+    }
+    if (existingParent !== undefined) {
+      if (!replaceParent) {
+        throw new Error(
+          `Issue #${sub} already has parent #${existingParent}.`,
+        );
+      }
+      const oldList = this.subIssuesStore().get(existingParent);
+      if (oldList !== undefined) {
+        const index = oldList.indexOf(sub);
+        if (index !== -1) {
+          oldList.splice(index, 1);
+        }
+      }
+    }
+    parents.set(sub, parent);
+    const list = this.subIssuesStore().get(parent) ?? [];
+    if (!list.includes(sub)) {
+      list.push(sub);
+    }
+    this.subIssuesStore().set(parent, list);
+  }
+
+  async removeSubIssue(parentId: string, subIssueId: string): Promise<void> {
+    const parent = FakeGitHubApi.numberFromNodeId(parentId);
+    const sub = FakeGitHubApi.numberFromNodeId(subIssueId);
+    this.record('removeSubIssue', parent, sub);
+    this.removedSubIssues.push({ parent, sub });
+    const list = this.subIssuesStore().get(parent);
+    if (list !== undefined) {
+      const index = list.indexOf(sub);
+      if (index !== -1) {
+        list.splice(index, 1);
+      }
+    }
+    if (this.parentsStore().get(sub) === parent) {
+      this.parentsStore().delete(sub);
+    }
+  }
+
+  async reprioritizeSubIssue(
+    parentId: string,
+    subIssueId: string,
+    afterId: string | null,
+  ): Promise<void> {
+    const parent = FakeGitHubApi.numberFromNodeId(parentId);
+    const sub = FakeGitHubApi.numberFromNodeId(subIssueId);
+    const after =
+      afterId === null ? null : FakeGitHubApi.numberFromNodeId(afterId);
+    this.record('reprioritizeSubIssue', parent, sub, after);
+    this.reprioritized.push({ parent, sub, after });
+    const list = this.subIssuesStore().get(parent);
+    if (list === undefined) {
+      return;
+    }
+    const index = list.indexOf(sub);
+    if (index !== -1) {
+      list.splice(index, 1);
+    }
+    if (after === null) {
+      list.unshift(sub);
+    } else {
+      const afterIndex = list.indexOf(after);
+      list.splice(afterIndex + 1, 0, sub);
+    }
   }
 
   // Pull requests are stateful so that a body update recomputes the closing

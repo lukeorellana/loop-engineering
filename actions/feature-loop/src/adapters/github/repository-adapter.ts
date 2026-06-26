@@ -23,11 +23,18 @@ import {
 } from '../../domain/index.js';
 import type {
   GitHubRepositoryPort,
+  IssueIdentity,
   RepositoryInfo,
 } from '../../ports/github-repository.js';
+import type { ExecutionPlan } from '../../domain/plan.js';
 import type { ApiPage, GitHubApi } from './api.js';
 import { CrossRepositoryReferenceError, sanitizeError } from './errors.js';
 import { buildStatusCommentBody, hasStatusMarker } from './status-comment.js';
+import {
+  buildPlanCommentBody,
+  decodePlanData,
+  epicPlanMarker,
+} from './plan-comment.js';
 
 /** A defensive cap on paginated reads to avoid unbounded loops. */
 const MAX_PAGES = 1000;
@@ -235,6 +242,79 @@ export class GitHubRepositoryAdapter implements GitHubRepositoryPort {
       this.api.listSubIssues(epicNumber, page),
     );
     return refs.map((ref) => ref.number);
+  }
+
+  async getIssueIdentity(issueNumber: number): Promise<IssueIdentity | null> {
+    const nodeId = await this.run('get issue identity', () =>
+      this.api.getIssueNodeId(issueNumber),
+    );
+    if (nodeId === null) {
+      return null;
+    }
+    return { number: issueNumber, nodeId };
+  }
+
+  async getInitializationPlan(
+    epicNumber: number,
+  ): Promise<ExecutionPlan | null> {
+    const body = await this.getStatusComment(
+      epicNumber,
+      epicPlanMarker(epicNumber),
+    );
+    return decodePlanData(body);
+  }
+
+  private async epicNodeId(epicNumber: number): Promise<string> {
+    const nodeId = await this.run('get epic identity', () =>
+      this.api.getIssueNodeId(epicNumber),
+    );
+    if (nodeId === null) {
+      throw new Error(`Epic #${epicNumber} could not be resolved.`);
+    }
+    return nodeId;
+  }
+
+  async addSubIssue(
+    epicNumber: number,
+    subIssueId: string,
+    replaceParent: boolean,
+  ): Promise<void> {
+    const parentId = await this.epicNodeId(epicNumber);
+    await this.run('add sub-issue', () =>
+      this.api.addSubIssue(parentId, subIssueId, replaceParent),
+    );
+  }
+
+  async removeSubIssue(
+    epicNumber: number,
+    subIssueId: string,
+  ): Promise<void> {
+    const parentId = await this.epicNodeId(epicNumber);
+    await this.run('remove sub-issue', () =>
+      this.api.removeSubIssue(parentId, subIssueId),
+    );
+  }
+
+  async reprioritizeSubIssue(
+    epicNumber: number,
+    subIssueId: string,
+    afterId: string | null,
+  ): Promise<void> {
+    const parentId = await this.epicNodeId(epicNumber);
+    await this.run('reprioritize sub-issue', () =>
+      this.api.reprioritizeSubIssue(parentId, subIssueId, afterId),
+    );
+  }
+
+  async upsertInitializationPlan(
+    epicNumber: number,
+    plan: ExecutionPlan,
+  ): Promise<void> {
+    await this.upsertStatusComment(
+      epicNumber,
+      epicPlanMarker(epicNumber),
+      buildPlanCommentBody(plan),
+    );
   }
 
   async getParentEpicNumber(issueNumber: number): Promise<number | null> {
