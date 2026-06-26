@@ -123,7 +123,7 @@ function failsStep(result: OrchestratorResult): boolean {
   );
 }
 
-async function finalize(
+export async function finalize(
   core: ActionCore,
   result: OrchestratorResult,
 ): Promise<OrchestratorResult> {

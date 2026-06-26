@@ -86,7 +86,9 @@ export interface OrchestratorInput {
 
 /**
  * The structured outcome of a loop iteration. `details` are sanitized,
- * human-readable summary lines safe to surface anywhere.
+ * human-readable diagnostics and action results safe to surface anywhere.
+ * `notices` are sanitized informational context that must not replace the
+ * primary failure diagnostic.
  */
 export interface OrchestratorResult {
   readonly outcome: ActionOutcome;
@@ -103,6 +105,7 @@ export interface OrchestratorResult {
    */
   readonly completedIssueNumber?: number;
   readonly details: readonly string[];
+  readonly notices?: readonly string[];
 }
 
 function dedupe(values: readonly number[]): number[] {
@@ -215,14 +218,17 @@ class Controller {
   async run(): Promise<OrchestratorResult> {
     let result = await this.runLoop();
     // Surface initialization details (e.g. epic-initialized / already-initialized)
-    // and the Markdown discovery source on the final result so manual dispatch
-    // reports what the transaction did.
-    const leadingDetails = [
-      ...(this.discoveryNote !== undefined ? [this.discoveryNote] : []),
-      ...this.initDetails,
-    ];
-    if (leadingDetails.length > 0) {
-      result = { ...result, details: [...leadingDetails, ...result.details] };
+    // on the final result so manual dispatch reports what the transaction did.
+    if (this.initDetails.length > 0) {
+      result = { ...result, details: [...this.initDetails, ...result.details] };
+    }
+    // Surface Markdown discovery as informational context, not as a primary
+    // detail, so it cannot mask configuration or operational failures.
+    if (this.discoveryNote !== undefined) {
+      result = {
+        ...result,
+        notices: [this.discoveryNote, ...(result.notices ?? [])],
+      };
     }
     // Surface the issue completed from a trusted merged pull request on every
     // exit path that continued past the completion (start, already-running,

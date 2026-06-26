@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { executeAction, type ActionEnvironment } from '../src/action/index.js';
+import {
+  executeAction,
+  finalize,
+  type ActionEnvironment,
+} from '../src/action/index.js';
 import { ACTION_OUTPUT_NAMES } from '../src/action/outputs.js';
 import { DEFAULT_CANONICAL_STATE_LABELS } from '../src/config/schema.js';
 import type { OrchestratorResult } from '../src/orchestrator/index.js';
@@ -262,6 +266,76 @@ describe('executeAction — failing exit paths', () => {
     });
     expect(result.outcome).toBe('configuration-error');
     expect(core.failed).not.toBeNull();
+  });
+});
+
+describe('finalize — notices and failure diagnostics', () => {
+  it('fails with the primary detail, not an informational notice', async () => {
+    const core = new FakeActionCore();
+    const result: OrchestratorResult = {
+      outcome: 'configuration-error',
+      reasonCode: 'initialization-failed',
+      dryRun: false,
+      details: ['actual hierarchy failure', 'secondary failure detail'],
+      notices: [
+        'Ordered sub-issues discovered from Markdown via the structural fallback.',
+      ],
+    };
+
+    await finalize(core, result);
+
+    expect(core.failed).toBe('actual hierarchy failure');
+    expect(core.failed).not.toBe(
+      'Ordered sub-issues discovered from Markdown via the structural fallback.',
+    );
+    expect(core.summary.buffer).toContain('### Notices');
+    expect(core.summary.buffer).toContain(
+      'Ordered sub-issues discovered from Markdown via the structural fallback.',
+    );
+    expect(core.summary.buffer).toContain('### Details');
+    expect(core.summary.buffer).toContain('actual hierarchy failure');
+    expect(core.summary.buffer).toContain('secondary failure detail');
+  });
+
+  it('falls back to the reason code when a failed result has no details', async () => {
+    const core = new FakeActionCore();
+
+    await finalize(core, {
+      outcome: 'operational-error',
+      reasonCode: 'transport-failed',
+      dryRun: false,
+      details: [],
+      notices: ['informational context'],
+    });
+
+    expect(core.failed).toBe('Feature Loop failed: transport-failed.');
+  });
+
+  it('does not fail successful or needs-human results that include notices', async () => {
+    const successCore = new FakeActionCore();
+    await finalize(successCore, {
+      outcome: 'started',
+      reasonCode: 'started',
+      dryRun: false,
+      issueNumber: 11,
+      details: ['Feature Loop started issue #11.'],
+      notices: ['informational context'],
+    });
+
+    const needsHumanCore = new FakeActionCore();
+    await finalize(needsHumanCore, {
+      outcome: 'needs-human',
+      reasonCode: 'blocked',
+      dryRun: false,
+      issueNumber: 11,
+      details: ['Feature Loop paused at issue #11: blocked.'],
+      notices: ['informational context'],
+    });
+
+    expect(successCore.failed).toBeNull();
+    expect(needsHumanCore.failed).toBeNull();
+    expect(successCore.summary.buffer).toContain('informational context');
+    expect(needsHumanCore.summary.buffer).toContain('informational context');
   });
 });
 
