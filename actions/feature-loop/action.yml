@@ -31,6 +31,14 @@ inputs:
       performing any comments, labels, assignments, or issue updates.
     required: false
     default: 'false'
+  force-reinitialize:
+    description: >-
+      When true, a manual workflow_dispatch reinitializes an already-initialized
+      epic, rewriting the frozen execution plan from the authored Ordered
+      sub-issues section. A normal rerun is idempotent and leaves the plan
+      unchanged.
+    required: false
+    default: 'false'
   config-path:
     description: >-
       Path to the Feature Loop configuration file on the repository default

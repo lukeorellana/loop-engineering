@@ -20,6 +20,11 @@ export interface ActionInputs {
   readonly epicIssue?: number;
   /** When `true`, the run is strictly read-only. */
   readonly dryRun: boolean;
+  /**
+   * When `true`, a manual dispatch reinitializes an already-initialized epic,
+   * rewriting the frozen execution plan.
+   */
+  readonly forceReinitialize: boolean;
   /** Optional configuration path on the default branch. */
   readonly configPath?: string;
 }
@@ -81,6 +86,11 @@ export function readActionInputs(core: ActionCore): ReadInputsResult {
 
   const epicIssue = parseEpicIssue(core.getInput('epic-issue'), errors);
   const dryRun = parseBoolean(core.getInput('dry-run'), 'dry-run', errors);
+  const forceReinitialize = parseBoolean(
+    core.getInput('force-reinitialize'),
+    'force-reinitialize',
+    errors,
+  );
   const configPathRaw = core.getInput('config-path').trim();
 
   if (errors.length > 0) {
@@ -94,6 +104,7 @@ export function readActionInputs(core: ActionCore): ReadInputsResult {
       agentToken,
       epicIssue,
       dryRun,
+      forceReinitialize,
       configPath: configPathRaw === '' ? undefined : configPathRaw,
     },
   };

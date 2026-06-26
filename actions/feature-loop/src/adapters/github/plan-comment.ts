@@ -7,10 +7,7 @@
  * Markdown but recoverable on later runs. These helpers are pure.
  */
 
-import {
-  decodeExecutionPlan,
-  type ExecutionPlan,
-} from '../../domain/plan.js';
+import { decodeExecutionPlan, type ExecutionPlan } from '../../domain/plan.js';
 
 /** The logical marker name used to scope a per-epic plan comment. */
 export function epicPlanMarker(epicNumber: number): string {

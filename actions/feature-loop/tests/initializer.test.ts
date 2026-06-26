@@ -89,7 +89,10 @@ function seededPlan(epicNumber: number, issues: number[]) {
 describe('initializeEpic — fresh initialization', () => {
   it('attaches unparented issues and persists the plan', async () => {
     const { result, api } = await init({
-      config: epicConfig([fakeIssue({ number: 11 }), fakeIssue({ number: 12 })]),
+      config: epicConfig([
+        fakeIssue({ number: 11 }),
+        fakeIssue({ number: 12 }),
+      ]),
       intendedIssues: [11, 12],
     });
 
@@ -203,9 +206,9 @@ describe('initializeEpic — state normalization', () => {
     });
 
     expect(result.kind).toBe('unexpected-active-issue');
-    expect(result.kind === 'unexpected-active-issue' && result.issueNumber).toBe(
-      11,
-    );
+    expect(
+      result.kind === 'unexpected-active-issue' && result.issueNumber,
+    ).toBe(11);
   });
 
   it('allows an active issue during an explicit reinitialization', async () => {
@@ -251,14 +254,11 @@ describe('initializeEpic — validation', () => {
 describe('initializeEpic — idempotency and reinitialization', () => {
   it('returns already-initialized for a normal rerun', async () => {
     const { result, api } = await init({
-      config: epicConfig(
-        [fakeIssue({ number: 11 })],
-        {
-          subIssues: { 1: [11] },
-          parents: { 11: 1 },
-          comments: { 1: [seededPlan(1, [11])] },
-        },
-      ),
+      config: epicConfig([fakeIssue({ number: 11 })], {
+        subIssues: { 1: [11] },
+        parents: { 11: 1 },
+        comments: { 1: [seededPlan(1, [11])] },
+      }),
       intendedIssues: [11],
     });
 
@@ -291,7 +291,10 @@ describe('initializeEpic — idempotency and reinitialization', () => {
 describe('initializeEpic — dry run', () => {
   it('reports proposed changes and performs zero writes', async () => {
     const { result, api } = await init({
-      config: epicConfig([fakeIssue({ number: 11 }), fakeIssue({ number: 12 })]),
+      config: epicConfig([
+        fakeIssue({ number: 11 }),
+        fakeIssue({ number: 12 }),
+      ]),
       intendedIssues: [11, 12],
       dryRun: true,
     });

@@ -28,8 +28,7 @@ export function readOnlyRepository(
       repository.getEpicWithSubIssues(epicNumber, numbers),
     getNativeSubIssueNumbers: (epicNumber) =>
       repository.getNativeSubIssueNumbers(epicNumber),
-    getIssueIdentity: (issueNumber) =>
-      repository.getIssueIdentity(issueNumber),
+    getIssueIdentity: (issueNumber) => repository.getIssueIdentity(issueNumber),
     getInitializationPlan: (epicNumber) =>
       repository.getInitializationPlan(epicNumber),
     getParentEpicNumber: (issueNumber) =>

@@ -271,7 +271,8 @@ export async function initializeEpic(
   // Reorder native sub-issues to exactly match the intended order. Walking the
   // chain so each issue immediately follows its predecessor fully determines the
   // order when the membership is exact.
-  const nativeAfterLinks = await repository.getNativeSubIssueNumbers(epicNumber);
+  const nativeAfterLinks =
+    await repository.getNativeSubIssueNumbers(epicNumber);
   if (!listsEqual(nativeAfterLinks, intendedIssues)) {
     for (let index = 1; index < intendedIssues.length; index += 1) {
       const subId = nodeIds.get(intendedIssues[index]);

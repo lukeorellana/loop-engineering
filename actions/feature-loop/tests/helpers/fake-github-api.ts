@@ -261,9 +261,7 @@ export class FakeGitHubApi implements GitHubApi {
     }
     if (existingParent !== undefined) {
       if (!replaceParent) {
-        throw new Error(
-          `Issue #${sub} already has parent #${existingParent}.`,
-        );
+        throw new Error(`Issue #${sub} already has parent #${existingParent}.`);
       }
       const oldList = this.subIssuesStore().get(existingParent);
       if (oldList !== undefined) {

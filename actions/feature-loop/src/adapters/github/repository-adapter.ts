@@ -285,10 +285,7 @@ export class GitHubRepositoryAdapter implements GitHubRepositoryPort {
     );
   }
 
-  async removeSubIssue(
-    epicNumber: number,
-    subIssueId: string,
-  ): Promise<void> {
+  async removeSubIssue(epicNumber: number, subIssueId: string): Promise<void> {
     const parentId = await this.epicNodeId(epicNumber);
     await this.run('remove sub-issue', () =>
       this.api.removeSubIssue(parentId, subIssueId),

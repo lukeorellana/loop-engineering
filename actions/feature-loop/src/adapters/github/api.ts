@@ -163,7 +163,6 @@ export interface GitHubApi {
     afterId: string | null,
   ): Promise<void>;
 
-
   /** A pull request, or `null` when it does not exist. */
   getPullRequest(pullNumber: number): Promise<ApiPullRequest | null>;
 
