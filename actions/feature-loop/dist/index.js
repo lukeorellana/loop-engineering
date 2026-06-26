@@ -69053,43 +69053,64 @@ function getOctokit(token, options, ...additionalPlugins) {
  * Transport failures must never leak raw API response bodies, credentials, or
  * authorization headers into user-facing messages or logs. The adapter wraps
  * every GitHub call and converts any failure into a {@link RepositoryApiError}
- * whose message is derived only from the operation name and a coarse,
- * status-based category.
+ * whose message is derived only from the operation name, a coarse category, and
+ * a small allowlist of structured GraphQL metadata (the GraphQL error `type` and
+ * extension `code`). REST failures are classified from the HTTP status; GraphQL
+ * failures frequently carry no HTTP status, so they are additionally classified
+ * from their safe `type`/`code` fields.
  */
 /**
  * An error raised when a repository operation fails. Its message contains only
- * the operation name and a generic, status-based reason — never raw bodies,
- * tokens, or headers.
+ * the operation name, a generic status/type-based reason, and allowlisted
+ * GraphQL `type`/`code` metadata — never raw bodies, tokens, or headers.
  */
 class RepositoryApiError extends Error {
     operation;
     code;
     status;
-    constructor(operation, code, status) {
-        super(`GitHub API request failed during ${operation}: ${describe(code, status)}.`);
+    /** Whether a bounded retry is appropriate for this failure. */
+    retryable;
+    /** Safe GraphQL metadata, when present. */
+    graphql;
+    constructor(operation, code, status, options = {}) {
+        const graphql = options.graphql ?? null;
+        super(`GitHub API request failed during ${operation}: ${describe(code, status, graphql)}.`);
         this.name = 'RepositoryApiError';
         this.operation = operation;
         this.code = code;
         this.status = status;
+        this.retryable = options.retryable ?? false;
+        this.graphql = graphql;
     }
 }
-function describe(code, status) {
-    const suffix = status === null ? '' : ` (HTTP ${status})`;
+function describe(code, status, graphql) {
+    const statusSuffix = status === null ? '' : ` (HTTP ${status})`;
+    const detail = [];
+    if (graphql?.type) {
+        detail.push(`type=${graphql.type}`);
+    }
+    if (graphql?.code) {
+        detail.push(`code=${graphql.code}`);
+    }
+    const graphqlSuffix = detail.length === 0 ? '' : ` [${detail.join(', ')}]`;
+    return `${reason(code)}${statusSuffix}${graphqlSuffix}`;
+}
+function reason(code) {
     switch (code) {
         case 'unauthorized':
-            return `authentication failed${suffix}`;
+            return 'authentication failed';
         case 'forbidden':
-            return `access is forbidden${suffix}`;
+            return 'access is forbidden';
         case 'not-found':
-            return `the resource was not found${suffix}`;
+            return 'the resource was not found';
         case 'rate-limited':
-            return `the request was rate limited${suffix}`;
+            return 'the request was rate limited';
         case 'validation':
-            return `the request was rejected as invalid${suffix}`;
+            return 'the request was rejected as invalid';
         case 'unavailable':
-            return `the service is unavailable${suffix}`;
+            return 'the service is unavailable';
         default:
-            return `an unexpected error occurred${suffix}`;
+            return 'an unexpected error occurred';
     }
 }
 /**
@@ -69128,10 +69149,49 @@ function statusOf(error) {
     }
     return null;
 }
-function codeForStatus(status) {
-    if (status === null) {
-        return 'unknown';
+/** A defensive cap so an attacker cannot smuggle a large blob through `type`. */
+const MAX_GRAPHQL_FIELD_LENGTH = 64;
+function safeField(value) {
+    if (typeof value !== 'string') {
+        return null;
     }
+    // Allowlist a conservative shape (GitHub GraphQL error types and codes are
+    // SCREAMING_SNAKE_CASE identifiers) so arbitrary server data can never leak.
+    if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(value)) {
+        return null;
+    }
+    return value.slice(0, MAX_GRAPHQL_FIELD_LENGTH);
+}
+/**
+ * Extract only the safe, allowlisted GraphQL `type` and extension `code` from an
+ * Octokit GraphQL failure. Returns `null` when the error carries no GraphQL
+ * error array. The GraphQL message, locations, path, and any response data are
+ * intentionally never read.
+ */
+function extractGraphqlInfo(error) {
+    if (typeof error !== 'object' || error === null) {
+        return null;
+    }
+    const candidate = error;
+    const list = Array.isArray(candidate.errors)
+        ? candidate.errors
+        : Array.isArray(candidate.response?.errors)
+            ? candidate.response?.errors
+            : null;
+    if (list === null || list.length === 0) {
+        return null;
+    }
+    const first = list[0];
+    if (typeof first !== 'object' || first === null) {
+        return null;
+    }
+    const typed = first;
+    return {
+        type: safeField(typed.type),
+        code: safeField(typed.extensions?.code),
+    };
+}
+function codeForStatus(status) {
     if (status === 401) {
         return 'unauthorized';
     }
@@ -69150,6 +69210,43 @@ function codeForStatus(status) {
     }
     return 'unknown';
 }
+function codeForGraphqlType(type) {
+    switch (type) {
+        case 'UNAUTHORIZED':
+            return 'unauthorized';
+        case 'FORBIDDEN':
+            return 'forbidden';
+        case 'NOT_FOUND':
+            return 'not-found';
+        case 'RATE_LIMITED':
+            return 'rate-limited';
+        case 'UNPROCESSABLE':
+            return 'validation';
+        case 'SERVICE_UNAVAILABLE':
+        case 'UNAVAILABLE':
+        case 'INTERNAL':
+            return 'unavailable';
+        default:
+            return null;
+    }
+}
+/**
+ * Decide whether a failure should be retried with bounded backoff. Rate limiting
+ * and service unavailability are always transient. A statusless GraphQL error
+ * that classifies as `validation` or `unknown` is treated as transient too,
+ * because the hierarchy reorder race surfaces as a statusless GraphQL error when
+ * a freshly linked sibling is not yet visible. Permanent authorization,
+ * forbidden, and not-found failures are never retried.
+ */
+function isRetryable(code, status) {
+    if (code === 'rate-limited' || code === 'unavailable') {
+        return true;
+    }
+    if (status === null && (code === 'validation' || code === 'unknown')) {
+        return true;
+    }
+    return false;
+}
 /**
  * Convert an arbitrary thrown value into a {@link RepositoryApiError} that is
  * safe to surface to users. Existing {@link RepositoryApiError}s pass through
@@ -69160,7 +69257,21 @@ function sanitizeError(operation, error) {
         return error;
     }
     const status = statusOf(error);
-    return new RepositoryApiError(operation, codeForStatus(status), status);
+    const graphql = extractGraphqlInfo(error);
+    let code = status === null ? null : codeForStatus(status);
+    if (code === null || code === 'unknown') {
+        const graphqlCode = graphql ? codeForGraphqlType(graphql.type) : null;
+        if (graphqlCode !== null) {
+            code = graphqlCode;
+        }
+    }
+    if (code === null) {
+        code = 'unknown';
+    }
+    return new RepositoryApiError(operation, code, status, {
+        retryable: isRetryable(code, status),
+        graphql,
+    });
 }
 
 ;// CONCATENATED MODULE: ./src/domain/issue-source.ts
@@ -71959,6 +72070,81 @@ function decideLoop(epic, evaluation) {
     return { outcome: 'complete', epic };
 }
 
+;// CONCATENATED MODULE: ./src/initializer/retry.ts
+/**
+ * Bounded retry, exponential backoff with jitter, and convergence polling for
+ * eventually-consistent GitHub hierarchy mutations.
+ *
+ * Freshly linked native sub-issues are not always immediately readable, and a
+ * reorder that references a sibling GitHub has not yet stabilized fails with a
+ * statusless GraphQL error. These helpers retry only failures the adapter
+ * classified as transient ({@link RepositoryApiError.retryable}); permanent
+ * authorization, validation, and not-found failures fail immediately. All loops
+ * are bounded — there is no unbounded sleep or retry.
+ */
+
+/** Real wall-clock timing for production use. */
+const realTiming = {
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    random: () => Math.random(),
+};
+/** The default policy for hierarchy mutations and convergence polling. */
+const HIERARCHY_BACKOFF = {
+    maxAttempts: 5,
+    initialDelayMs: 200,
+    maxDelayMs: 4000,
+};
+/**
+ * Compute the backoff delay for a 1-based attempt using capped exponential
+ * growth and equal jitter (half fixed, half random) so concurrent runs do not
+ * synchronize while a positive lower bound is preserved.
+ */
+function backoffDelayMs(policy, attempt, random) {
+    const exponential = policy.initialDelayMs * 2 ** Math.max(0, attempt - 1);
+    const capped = Math.min(policy.maxDelayMs, exponential);
+    const half = capped / 2;
+    return Math.floor(half + random() * half);
+}
+/**
+ * Run `fn` with bounded retries, retrying only transient
+ * {@link RepositoryApiError}s. Non-`RepositoryApiError` throwables propagate
+ * unchanged (they indicate a programming error, not a transport failure).
+ * `onRetry` is invoked before each backoff sleep with the upcoming attempt
+ * number so callers can emit safe progress logs.
+ */
+async function retryTransient(fn, policy, timing, onRetry) {
+    let lastError = null;
+    for (let attempt = 1; attempt <= policy.maxAttempts; attempt += 1) {
+        try {
+            return { ok: true, value: await fn() };
+        }
+        catch (error) {
+            if (!(error instanceof RepositoryApiError)) {
+                throw error;
+            }
+            lastError = error;
+            if (!error.retryable || attempt >= policy.maxAttempts) {
+                return { ok: false, error };
+            }
+            onRetry?.(attempt + 1, error);
+            await timing.sleep(backoffDelayMs(policy, attempt, timing.random));
+        }
+    }
+    // Unreachable: the loop always returns. Present only for exhaustiveness.
+    return {
+        ok: false,
+        error: lastError ??
+            new RepositoryApiError('retry', 'unknown', null, { retryable: false }),
+    };
+}
+/**
+ * Build a safe, actionable message for an exhausted retry budget. It carries the
+ * sanitized failure reason plus the attempt count, never raw response data.
+ */
+function retryExhaustedMessage(error, policy) {
+    return `${error.message} Retry ${policy.maxAttempts} of ${policy.maxAttempts} failed.`;
+}
+
 ;// CONCATENATED MODULE: ./src/initializer/initialize-epic.ts
 /**
  * Idempotent epic initialization.
@@ -71978,14 +72164,141 @@ function decideLoop(epic, evaluation) {
  * read the persisted plan instead of re-resolving competing issue sources.
  */
 
+
+
 function initialize_epic_listsEqual(a, b) {
     return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+/** `true` when `sub` immediately follows `after` in `native`. */
+function adjacencySatisfied(native, sub, after) {
+    const afterIndex = native.indexOf(after);
+    return afterIndex !== -1 && native[afterIndex + 1] === sub;
+}
+/**
+ * Poll native sub-issues with bounded backoff until `isSatisfied` accepts the
+ * visible membership. Transient read failures are retried; permanent failures
+ * stop immediately. Returns the converged membership or a safe failure.
+ */
+async function waitForMembership(ctx, isSatisfied) {
+    const { repository, logger, epicNumber, policy, timing } = ctx;
+    let lastError = null;
+    let lastNative = null;
+    for (let attempt = 1; attempt <= policy.maxAttempts; attempt += 1) {
+        try {
+            const native = await repository.getNativeSubIssueNumbers(epicNumber);
+            lastNative = native;
+            if (isSatisfied(native)) {
+                return { ok: true, native };
+            }
+        }
+        catch (error) {
+            if (!(error instanceof RepositoryApiError)) {
+                throw error;
+            }
+            if (!error.retryable) {
+                return { ok: false, messages: [error.message] };
+            }
+            lastError = error;
+        }
+        if (attempt >= policy.maxAttempts) {
+            break;
+        }
+        await timing.sleep(backoffDelayMs(policy, attempt, timing.random));
+    }
+    const reason = lastError !== null
+        ? retryExhaustedMessage(lastError, policy)
+        : `Epic #${epicNumber} hierarchy did not converge after linking; ` +
+            `last visible native sub-issues were [${(lastNative ?? []).join(', ')}].`;
+    logger.warning('Feature Loop: hierarchy convergence timed out', {
+        epic: epicNumber,
+    });
+    return { ok: false, messages: [reason] };
+}
+/**
+ * Move `sub` so it immediately follows `after`, state-aware and incremental:
+ * re-read current order before each move, skip when adjacency already holds,
+ * execute the smallest required move, then re-read to verify. Transient failures
+ * retry within the bounded budget; permanent failures stop immediately.
+ */
+async function ensureAdjacency(ctx, move) {
+    const { repository, logger, epicNumber, policy, timing } = ctx;
+    const { sub, subId, after, afterId } = move;
+    let lastError = null;
+    for (let attempt = 1; attempt <= policy.maxAttempts; attempt += 1) {
+        let native;
+        try {
+            native = await repository.getNativeSubIssueNumbers(epicNumber);
+        }
+        catch (error) {
+            if (!(error instanceof RepositoryApiError)) {
+                throw error;
+            }
+            if (!error.retryable) {
+                return { ok: false, messages: [error.message] };
+            }
+            lastError = error;
+            if (attempt >= policy.maxAttempts) {
+                break;
+            }
+            logger.info(`Feature Loop: reprioritize retry ${attempt + 1}/${policy.maxAttempts}`, { epic: epicNumber, issue: sub });
+            await timing.sleep(backoffDelayMs(policy, attempt, timing.random));
+            continue;
+        }
+        // Adjacency may have converged asynchronously: skip the write when correct.
+        if (adjacencySatisfied(native, sub, after)) {
+            return { ok: true };
+        }
+        // Both endpoints must be visible before a move can reference them.
+        if (!native.includes(sub) || !native.includes(after)) {
+            if (attempt >= policy.maxAttempts) {
+                break;
+            }
+            await timing.sleep(backoffDelayMs(policy, attempt, timing.random));
+            continue;
+        }
+        logger.info(`Feature Loop: reprioritizing issue #${sub} after #${after}`, {
+            epic: epicNumber,
+        });
+        try {
+            await repository.reprioritizeSubIssue(epicNumber, subId, afterId);
+        }
+        catch (error) {
+            if (!(error instanceof RepositoryApiError)) {
+                throw error;
+            }
+            if (!error.retryable) {
+                return { ok: false, messages: [error.message] };
+            }
+            lastError = error;
+            if (attempt >= policy.maxAttempts) {
+                break;
+            }
+            logger.info(`Feature Loop: reprioritize retry ${attempt + 1}/${policy.maxAttempts}`, { epic: epicNumber, issue: sub });
+            await timing.sleep(backoffDelayMs(policy, attempt, timing.random));
+            continue;
+        }
+        // The write succeeded; the next iteration re-reads to verify the move.
+    }
+    const reason = lastError !== null
+        ? retryExhaustedMessage(lastError, policy)
+        : `Epic #${epicNumber} reorder of issue #${sub} after #${after} ` +
+            `did not converge within ${policy.maxAttempts} attempts.`;
+    return { ok: false, messages: [reason] };
 }
 /**
  * Run the idempotent epic initialization transaction.
  */
 async function initializeEpic(input) {
     const { repository, logger, epicNumber, intendedIssues, labels, exactSync, dryRun, forceReinitialize, } = input;
+    const policy = input.backoff ?? HIERARCHY_BACKOFF;
+    const timing = input.timing ?? realTiming;
+    const hierarchy = {
+        repository,
+        logger,
+        epicNumber,
+        policy,
+        timing,
+    };
     // A normal rerun of an already-initialized epic is idempotent: the persisted
     // plan is the execution contract and is not rewritten unless reinitialization
     // was explicitly requested.
@@ -72108,43 +72421,93 @@ async function initializeEpic(input) {
         });
         return { kind: 'dry-run', issues: [...intendedIssues], details };
     }
-    // Apply attach/reparent mutations.
+    // Apply attach/reparent mutations, retrying transient transport failures.
     for (const item of attach) {
         const subId = nodeIds.get(item.number);
         if (subId === undefined) {
             continue;
         }
-        await repository.addSubIssue(epicNumber, subId, item.replaceParent);
+        const attached = await retryTransient(() => repository.addSubIssue(epicNumber, subId, item.replaceParent), policy, timing, (nextAttempt) => logger.info(`Feature Loop: add sub-issue retry ${nextAttempt}/${policy.maxAttempts}`, { epic: epicNumber, issue: item.number }));
+        if (!attached.ok) {
+            return {
+                kind: 'failed',
+                reason: 'initialization-failed',
+                messages: [retryExhaustedMessage(attached.error, policy)],
+            };
+        }
         logger.info('Feature Loop: linked sub-issue to epic', {
             epic: epicNumber,
             issue: item.number,
             reparented: item.replaceParent,
         });
     }
-    // Remove unexpected native sub-issues.
+    // Remove unexpected native sub-issues, retrying transient transport failures.
     for (const number of unexpected) {
         const identity = await repository.getIssueIdentity(number);
         if (identity === null) {
             continue;
         }
-        await repository.removeSubIssue(epicNumber, identity.nodeId);
+        const removed = await retryTransient(() => repository.removeSubIssue(epicNumber, identity.nodeId), policy, timing, (nextAttempt) => logger.info(`Feature Loop: remove sub-issue retry ${nextAttempt}/${policy.maxAttempts}`, { epic: epicNumber, issue: number }));
+        if (!removed.ok) {
+            return {
+                kind: 'failed',
+                reason: 'initialization-failed',
+                messages: [retryExhaustedMessage(removed.error, policy)],
+            };
+        }
         logger.info('Feature Loop: removed unexpected native sub-issue', {
             epic: epicNumber,
             issue: number,
         });
     }
-    // Reorder native sub-issues to exactly match the intended order. Walking the
-    // chain so each issue immediately follows its predecessor fully determines the
-    // order when the membership is exact.
-    const nativeAfterLinks = await repository.getNativeSubIssueNumbers(epicNumber);
-    if (!initialize_epic_listsEqual(nativeAfterLinks, intendedIssues)) {
-        for (let index = 1; index < intendedIssues.length; index += 1) {
-            const subId = nodeIds.get(intendedIssues[index]);
-            const afterId = nodeIds.get(intendedIssues[index - 1]);
-            if (subId === undefined || afterId === undefined) {
-                continue;
-            }
-            await repository.reprioritizeSubIssue(epicNumber, subId, afterId);
+    // After linking/removing, wait for the native hierarchy to converge before any
+    // reorder. Freshly linked relationships are eventually consistent: a reorder
+    // that references a sibling GitHub has not yet stabilized fails transiently.
+    if (attach.length > 0 || unexpected.length > 0) {
+        logger.info('Feature Loop: waiting for native hierarchy convergence', {
+            epic: epicNumber,
+        });
+        const convergence = await waitForMembership(hierarchy, (native) => {
+            const allVisible = intendedIssues.every((number) => native.includes(number));
+            const noUnexpected = exactSync
+                ? native.every((number) => plannedSet.has(number))
+                : true;
+            return allVisible && noUnexpected;
+        });
+        if (!convergence.ok) {
+            return {
+                kind: 'failed',
+                reason: 'initialization-failed',
+                messages: convergence.messages,
+            };
+        }
+        logger.info('Feature Loop: hierarchy membership visible', {
+            epic: epicNumber,
+        });
+    }
+    // Reorder native sub-issues to match the intended order. Each move is
+    // state-aware and incremental: re-read current order, skip already-satisfied
+    // adjacency, perform the smallest move, then verify before continuing.
+    for (let index = 1; index < intendedIssues.length; index += 1) {
+        const sub = intendedIssues[index];
+        const after = intendedIssues[index - 1];
+        const subId = nodeIds.get(sub);
+        const afterId = nodeIds.get(after);
+        if (subId === undefined || afterId === undefined) {
+            continue;
+        }
+        const moved = await ensureAdjacency(hierarchy, {
+            sub,
+            subId,
+            after,
+            afterId,
+        });
+        if (!moved.ok) {
+            return {
+                kind: 'failed',
+                reason: 'initialization-failed',
+                messages: moved.messages,
+            };
         }
     }
     // Apply canonical state normalization.
@@ -72170,6 +72533,10 @@ async function initializeEpic(input) {
             ],
         };
     }
+    logger.info('Feature Loop: verified native order', {
+        epic: epicNumber,
+        order: nativeFinal,
+    });
     // Persist the frozen execution plan last.
     const plan = buildExecutionPlan(epicNumber, intendedIssues);
     await repository.upsertInitializationPlan(epicNumber, plan);

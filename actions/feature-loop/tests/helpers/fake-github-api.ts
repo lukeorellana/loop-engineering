@@ -86,6 +86,33 @@ export class FakeGitHubApi implements GitHubApi {
 
   constructor(private readonly config: FakeConfig = {}) {}
 
+  // --- Test hooks for modeling eventual consistency / transient failures. ---
+  /**
+   * Numbers hidden from `listSubIssues` of the epic for the first
+   * `nativeVisibilityDelay` reads, modeling delayed hierarchy convergence.
+   */
+  nativeVisibilityDelay = 0;
+  hiddenUntilVisible: number[] = [];
+  private listSubIssuesCalls = 0;
+  /** Throw a transient transport error on the first N `reprioritizeSubIssue`. */
+  reprioritizeFailures = 0;
+  /** Throw a transient transport error on the first N `listSubIssues`. */
+  listFailures = 0;
+  /**
+   * Factory for the simulated transient transport error. Defaults to a
+   * statusless GraphQL `UNPROCESSABLE` error, which the adapter classifies as
+   * retryable (the freshly-linked-sibling race).
+   */
+  transientError: () => unknown = () =>
+    Object.assign(new Error('GraphQL request failed'), {
+      errors: [
+        { type: 'UNPROCESSABLE', extensions: { code: 'unprocessable' } },
+      ],
+    });
+  /** Factory for a simulated permanent transport error (HTTP 403 forbidden). */
+  permanentError: () => unknown = () =>
+    Object.assign(new Error('Forbidden'), { status: 403 });
+
   private record(op: string, ...args: unknown[]): void {
     this.calls.push({ op, args });
   }
@@ -196,9 +223,21 @@ export class FakeGitHubApi implements GitHubApi {
     page: number,
   ): Promise<ApiPage<ApiNumberRef>> {
     this.record('listSubIssues', issueNumber, page);
-    const refs = (this.subIssuesOf(issueNumber) ?? []).map((number) => ({
-      number,
-    }));
+    this.listSubIssuesCalls += 1;
+    if (this.listFailures > 0) {
+      this.listFailures -= 1;
+      throw this.transientError();
+    }
+    let numbers = this.subIssuesOf(issueNumber) ?? [];
+    if (
+      this.listSubIssuesCalls <= this.nativeVisibilityDelay &&
+      this.hiddenUntilVisible.length > 0
+    ) {
+      numbers = numbers.filter(
+        (number) => !this.hiddenUntilVisible.includes(number),
+      );
+    }
+    const refs = numbers.map((number) => ({ number }));
     return paginate(refs, this.pageSize)(page);
   }
 
@@ -305,6 +344,11 @@ export class FakeGitHubApi implements GitHubApi {
     const sub = FakeGitHubApi.numberFromNodeId(subIssueId);
     const after =
       afterId === null ? null : FakeGitHubApi.numberFromNodeId(afterId);
+    if (this.reprioritizeFailures > 0) {
+      this.reprioritizeFailures -= 1;
+      this.record('reprioritizeSubIssue:failed', parent, sub, after);
+      throw this.transientError();
+    }
     this.record('reprioritizeSubIssue', parent, sub, after);
     this.reprioritized.push({ parent, sub, after });
     const list = this.subIssuesStore().get(parent);
