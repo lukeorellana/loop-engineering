@@ -71143,8 +71143,9 @@ const systemClock = {
  *
  * {@link buildStepSummary} turns a loop result into a compact Markdown summary
  * suitable for `GITHUB_STEP_SUMMARY`. It distinguishes dry-run previews from
- * applied results and lists the sanitized detail lines the loop produced, so a
- * reader can see what happened (or would happen) without opening the run log.
+ * applied results and lists the sanitized notice and detail lines the loop
+ * produced, so a reader can see what happened (or would happen) without opening
+ * the run log.
  */
 const OUTCOME_TITLES = {
     started: 'Started the next sub-issue',
@@ -71181,6 +71182,12 @@ function buildStepSummary(result) {
     }
     if (result.completedIssueNumber !== undefined) {
         summary += row('Completed issue', `#${result.completedIssueNumber}`);
+    }
+    if ((result.notices?.length ?? 0) > 0) {
+        summary += '\n### Notices\n\n';
+        for (const notice of result.notices ?? []) {
+            summary += `- ${escapeCell(notice)}\n`;
+        }
     }
     if (result.details.length > 0) {
         summary += '\n### Details\n\n';
@@ -73035,14 +73042,17 @@ class Controller {
     async run() {
         let result = await this.runLoop();
         // Surface initialization details (e.g. epic-initialized / already-initialized)
-        // and the Markdown discovery source on the final result so manual dispatch
-        // reports what the transaction did.
-        const leadingDetails = [
-            ...(this.discoveryNote !== undefined ? [this.discoveryNote] : []),
-            ...this.initDetails,
-        ];
-        if (leadingDetails.length > 0) {
-            result = { ...result, details: [...leadingDetails, ...result.details] };
+        // on the final result so manual dispatch reports what the transaction did.
+        if (this.initDetails.length > 0) {
+            result = { ...result, details: [...this.initDetails, ...result.details] };
+        }
+        // Surface Markdown discovery as informational context, not as a primary
+        // detail, so it cannot mask configuration or operational failures.
+        if (this.discoveryNote !== undefined) {
+            result = {
+                ...result,
+                notices: [this.discoveryNote, ...(result.notices ?? [])],
+            };
         }
         // Surface the issue completed from a trusted merged pull request on every
         // exit path that continued past the completion (start, already-running,
