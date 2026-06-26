@@ -172,7 +172,45 @@ For each situation: symptom → cause → fix → verify (run a dry run, then re
   existing issue in the same repository and the epic does not list itself.
 - **Verify:** Dry-run; the summary reports the proposed plan with zero writes.
 
-### Unexpected active issue during initialization
+### Reprioritization failures right after fresh linking
+
+- **Symptom:** A first-time initialization links the native sub-issues, then
+  fails while reordering them — historically surfaced as
+  `GitHub API request failed during reprioritize sub-issue: an unexpected error
+occurred.`
+- **Cause:** GitHub's sub-issue hierarchy is **eventually consistent**.
+  Immediately after attaching or reparenting several children, the relationship
+  and ordering index may not have converged, so a reorder that references a
+  freshly linked sibling fails transiently. These GraphQL failures often carry no
+  HTTP status, which previously collapsed to a generic "unexpected error".
+- **What the loop now does automatically:**
+  - After attach/reparent/remove, it **polls** native sub-issues with bounded
+    exponential backoff and jitter until every planned issue is visible under the
+    epic (`Feature Loop: waiting for native hierarchy convergence` →
+    `Feature Loop: hierarchy membership visible`).
+  - Reordering is **state-aware and incremental**: it re-reads the current native
+    order before each move, **skips** a move whose adjacency is already satisfied,
+    performs only the smallest required reprioritize, and re-reads to verify.
+  - Transient `addSubIssue`, `removeSubIssue`, and `reprioritizeSubIssue` failures
+    are **retried** with bounded backoff (`Feature Loop: reprioritize retry
+2/5`). Permanent authorization, forbidden, not-found, and REST validation
+    failures stop immediately.
+  - Sanitized errors now preserve safe GraphQL metadata (the error `type` and
+    extension `code`, for example `[type=UNPROCESSABLE, code=unprocessable]`)
+    without ever logging tokens, headers, or raw response bodies.
+- **Symptom:** `outcome: configuration-error`, reason `initialization-failed`,
+  with a message ending in `Retry 5 of 5 failed.`
+- **Cause:** The transient retry budget was exhausted — the hierarchy never
+  converged, or GitHub kept rejecting the reorder.
+- **Fix:** This is safe to rerun. A partial initialization is idempotent:
+  already-attached children are recognized, no duplicate relationship writes are
+  issued, ordering resumes from the current native state, and the frozen plan is
+  persisted only after the native order exactly matches the intended order. Rerun
+  the manual dispatch (no **force-reinitialize** is required when no plan was
+  persisted). If it keeps failing, dry-run to confirm the intended plan and
+  inspect the run log for the preserved GraphQL `type`/`code`.
+- **Verify:** Rerun the manual dispatch; the log reports
+  `Feature Loop: verified native order [...]` before the plan is persisted.
 
 - **Symptom:** `outcome: needs-human`, reason `unexpected-active-issue`.
 - **Cause:** A first-time initialization found a sub-issue already labeled

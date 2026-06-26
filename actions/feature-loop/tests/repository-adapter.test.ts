@@ -7,6 +7,7 @@ import {
   CrossRepositoryReferenceError,
   MarkdownDiscoveryError,
   hasStatusMarker,
+  sanitizeError,
   type GitHubApi,
 } from '../src/adapters/github/index.js';
 import { FakeGitHubApi, fakeIssue } from './helpers/fake-github-api.js';
@@ -414,5 +415,99 @@ describe('GitHubRepositoryAdapter error sanitization', () => {
     expect(message).not.toContain('Authorization');
     expect((error as RepositoryApiError).code).toBe('forbidden');
     expect((error as RepositoryApiError).status).toBe(403);
+  });
+});
+
+describe('sanitizeError — GraphQL classification', () => {
+  it('classifies a statusless GraphQL error and retains safe type/code', () => {
+    const error = sanitizeError('reprioritize sub-issue', {
+      errors: [
+        {
+          type: 'UNPROCESSABLE',
+          message: 'secret detail ghp_LEAK',
+          extensions: { code: 'unprocessable' },
+        },
+      ],
+      response: {
+        data: { secret: 'ghp_LEAK' },
+        headers: { authorization: 'x' },
+      },
+    });
+    expect(error.code).toBe('validation');
+    expect(error.status).toBeNull();
+    // Statusless GraphQL validation errors model the freshly-linked-sibling
+    // race and are retryable.
+    expect(error.retryable).toBe(true);
+    expect(error.graphql).toEqual({
+      type: 'UNPROCESSABLE',
+      code: 'unprocessable',
+    });
+    // The safe type is surfaced in the message; raw data is never present.
+    expect(error.message).toContain('reprioritize sub-issue');
+    expect(error.message).toContain('UNPROCESSABLE');
+    expect(error.message).not.toContain('ghp_LEAK');
+    expect(error.message).not.toContain('authorization');
+  });
+
+  it('classifies a permanent GraphQL FORBIDDEN error as non-retryable', () => {
+    const error = sanitizeError('reprioritize sub-issue', {
+      errors: [{ type: 'FORBIDDEN', extensions: { code: 'forbidden' } }],
+    });
+    expect(error.code).toBe('forbidden');
+    expect(error.retryable).toBe(false);
+  });
+
+  it('treats a statusless GraphQL error with no type as retryable unknown', () => {
+    const error = sanitizeError('reprioritize sub-issue', {
+      errors: [{ message: 'boom' }],
+    });
+    expect(error.code).toBe('unknown');
+    expect(error.status).toBeNull();
+    expect(error.retryable).toBe(true);
+    expect(error.graphql).toEqual({ type: null, code: null });
+  });
+
+  it('rejects non-allowlisted GraphQL type/code values', () => {
+    const error = sanitizeError('reprioritize sub-issue', {
+      errors: [
+        {
+          type: 'has spaces and ghp_LEAK',
+          extensions: { code: { nested: 'object' } },
+        },
+      ],
+    });
+    expect(error.graphql).toEqual({ type: null, code: null });
+    expect(error.message).not.toContain('ghp_LEAK');
+  });
+
+  it('keeps REST 5xx and 429 retryable but 4xx validation permanent', () => {
+    expect(
+      sanitizeError('x', Object.assign(new Error(), { status: 503 })).retryable,
+    ).toBe(true);
+    expect(
+      sanitizeError('x', Object.assign(new Error(), { status: 429 })).retryable,
+    ).toBe(true);
+    expect(
+      sanitizeError('x', Object.assign(new Error(), { status: 422 })).retryable,
+    ).toBe(false);
+    expect(
+      sanitizeError('x', Object.assign(new Error(), { status: 403 })).retryable,
+    ).toBe(false);
+  });
+});
+
+describe('GitHubRepositoryAdapter reprioritizeSubIssue transport', () => {
+  it('sends the resolved parent, child, and after identifiers', async () => {
+    const api = new FakeGitHubApi({
+      issues: {
+        1: fakeIssue({ number: 1 }),
+        11: fakeIssue({ number: 11 }),
+        12: fakeIssue({ number: 12 }),
+      },
+      subIssues: { 1: [11, 12] },
+      parents: { 11: 1, 12: 1 },
+    });
+    await adapterFor(api).reprioritizeSubIssue(1, 'node-12', 'node-11');
+    expect(api.reprioritized).toContainEqual({ parent: 1, sub: 12, after: 11 });
   });
 });
