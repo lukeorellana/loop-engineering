@@ -132,6 +132,37 @@ export interface GitHubApi {
   /** The native parent issue number, or `null` when there is none. */
   getParentIssueNumber(issueNumber: number): Promise<number | null>;
 
+  /**
+   * The GraphQL node id of an issue, or `null` when the issue does not exist in
+   * this repository. Native sub-issue mutations are addressed by node id.
+   */
+  getIssueNodeId(issueNumber: number): Promise<string | null>;
+
+  /**
+   * Attach a sub-issue to a parent issue. When `replaceParent` is `true`, an
+   * existing parent on the sub-issue is replaced; otherwise the call fails when
+   * the sub-issue already has a different parent. Idempotent when the
+   * relationship already exists.
+   */
+  addSubIssue(
+    parentId: string,
+    subIssueId: string,
+    replaceParent: boolean,
+  ): Promise<void>;
+
+  /** Detach a sub-issue from a parent issue. Idempotent when already absent. */
+  removeSubIssue(parentId: string, subIssueId: string): Promise<void>;
+
+  /**
+   * Reorder a sub-issue within a parent so that it immediately follows
+   * `afterId`, or moves to the first position when `afterId` is `null`.
+   */
+  reprioritizeSubIssue(
+    parentId: string,
+    subIssueId: string,
+    afterId: string | null,
+  ): Promise<void>;
+
   /** A pull request, or `null` when it does not exist. */
   getPullRequest(pullNumber: number): Promise<ApiPullRequest | null>;
 

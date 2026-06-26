@@ -37,7 +37,9 @@ import {
   type MergedPullRequest,
 } from '../domain/merged-pr.js';
 import { resolvePullRequestLink } from '../domain/pr-link.js';
+import { detectPlanDrift } from '../domain/plan.js';
 import { decideLoop, type LoopEvaluation } from '../domain/state-machine.js';
+import { initializeEpic } from '../initializer/index.js';
 import { DEFAULT_CONFIG_PATH, preflight } from '../preflight/index.js';
 import type { AgentProviderPort } from '../ports/agent-provider.js';
 import type { Clock } from '../ports/clock.js';
@@ -60,6 +62,11 @@ export interface LoopRequest {
   readonly event: LoopEventInput;
   /** When `true`, the iteration is strictly read-only (no mutations). */
   readonly dryRun: boolean;
+  /**
+   * When `true`, a manual dispatch reinitializes an already-initialized epic,
+   * rewriting the frozen execution plan. A normal rerun is idempotent.
+   */
+  readonly forceReinitialize?: boolean;
 }
 
 /**
@@ -152,6 +159,7 @@ class Controller {
   private readonly clock: Clock;
   private readonly logger: Logger;
   private readonly dryRun: boolean;
+  private readonly forceReinitialize: boolean;
   private readonly configPath?: string;
   private readonly event: LoopEventInput;
 
@@ -166,6 +174,9 @@ class Controller {
   // Set when a trusted merged pull request completes a prior sub-issue.
   private completedIssueNumber?: number;
 
+  // Details from epic initialization, surfaced on the final result.
+  private initDetails: readonly string[] = [];
+
   constructor(input: OrchestratorInput) {
     // Dry-run uses a read-only repository view so the zero-write invariant holds
     // by construction, even for code paths without an explicit dry-run guard.
@@ -176,12 +187,18 @@ class Controller {
     this.clock = input.clock;
     this.logger = input.logger;
     this.dryRun = input.request.dryRun;
+    this.forceReinitialize = input.request.forceReinitialize ?? false;
     this.configPath = input.configPath;
     this.event = input.request.event;
   }
 
   async run(): Promise<OrchestratorResult> {
-    const result = await this.runLoop();
+    let result = await this.runLoop();
+    // Surface initialization details (e.g. epic-initialized / already-initialized)
+    // on the final result so manual dispatch reports what the transaction did.
+    if (this.initDetails.length > 0) {
+      result = { ...result, details: [...this.initDetails, ...result.details] };
+    }
     // Surface the issue completed from a trusted merged pull request on every
     // exit path that continued past the completion (start, already-running,
     // complete, no-op, or pause), without overwriting an explicit value.
@@ -287,6 +304,22 @@ class Controller {
       };
     }
 
+    // 2 (continued). Epic plan: a manual dispatch initializes (or verifies) the
+    // frozen execution plan; a continuation run reads the frozen plan and pauses
+    // on drift. Both establish the controlling ordered issue list before any
+    // epic read so the loop never re-resolves competing issue sources.
+    if (resolved.kind === 'manual') {
+      const initialized = await this.initializeEpicPlan(pre.issues);
+      if (initialized !== null) {
+        return initialized;
+      }
+    } else {
+      const continued = await this.loadFrozenPlanForContinuation();
+      if (continued !== null) {
+        return continued;
+      }
+    }
+
     // Read: load the epic with the controlling ordered sub-issue list.
     const epic = await this.loadEpic();
 
@@ -303,6 +336,108 @@ class Controller {
 
     // 6–11. Decide and act.
     return this.decideAndDispatch(true);
+  }
+
+  /**
+   * Initialize (or verify) the frozen execution plan for a manual dispatch.
+   *
+   * Returns a terminal {@link OrchestratorResult} when initialization fails
+   * closed or pauses for human attention; otherwise returns `null` after the
+   * controlling ordered issue list has been established from the frozen plan.
+   */
+  private async initializeEpicPlan(
+    intendedIssues: readonly number[],
+  ): Promise<OrchestratorResult | null> {
+    const result = await initializeEpic({
+      repository: this.repository,
+      logger: this.logger,
+      epicNumber: this.epicNumber,
+      intendedIssues,
+      labels: this.labels,
+      exactSync: true,
+      dryRun: this.dryRun,
+      forceReinitialize: this.forceReinitialize,
+    });
+
+    switch (result.kind) {
+      case 'failed':
+        return {
+          outcome: 'configuration-error',
+          reasonCode: 'initialization-failed',
+          dryRun: this.dryRun,
+          epicNumber: this.epicNumber,
+          details: [...result.messages],
+        };
+      case 'unexpected-active-issue':
+        await this.postStatus(this.epicNumber, {
+          state: 'needs-human',
+          reason: 'unexpected-active-issue',
+          humanText: result.messages.join(' '),
+        });
+        return {
+          outcome: 'needs-human',
+          reasonCode: 'unexpected-active-issue',
+          dryRun: this.dryRun,
+          epicNumber: this.epicNumber,
+          issueNumber: result.issueNumber,
+          details: [...result.messages],
+        };
+      case 'dry-run':
+        this.issues = result.issues;
+        this.initDetails = result.details;
+        return null;
+      case 'already-initialized':
+        this.issues = result.plan.issues;
+        this.initDetails = result.details;
+        return null;
+      case 'initialized':
+        this.issues = result.plan.issues;
+        this.initDetails = result.details;
+        return null;
+    }
+  }
+
+  /**
+   * Load the frozen execution plan for a continuation run and verify the native
+   * hierarchy has not drifted. Returns a terminal {@link OrchestratorResult}
+   * when the plan and native hierarchy differ (`plan-drift`); otherwise returns
+   * `null` after adopting the planned order, or leaves the preflight-resolved
+   * order in place when no plan has been persisted yet.
+   */
+  private async loadFrozenPlanForContinuation(): Promise<OrchestratorResult | null> {
+    const plan = await this.repository.getInitializationPlan(this.epicNumber);
+    if (plan === null) {
+      // Backward compatible: an epic initialized before this feature continues
+      // on the preflight-resolved order.
+      return null;
+    }
+
+    this.issues = plan.issues;
+
+    const nativeOrder = await this.repository.getNativeSubIssueNumbers(
+      this.epicNumber,
+    );
+    const drift = detectPlanDrift(plan, nativeOrder);
+    if (drift.drifted) {
+      const messages = [
+        drift.message,
+        'Reinitialize the epic with force-reinitialize to adopt the new hierarchy.',
+      ];
+      await this.postStatus(this.epicNumber, {
+        state: 'needs-human',
+        reason: 'plan-drift',
+        humanText: messages.join(' '),
+      });
+      return {
+        outcome: 'needs-human',
+        reasonCode: 'plan-drift',
+        dryRun: this.dryRun,
+        epicNumber: this.epicNumber,
+        details: messages,
+      };
+    }
+
+    return null;
   }
 
   /**

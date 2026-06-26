@@ -26,6 +26,13 @@ on:
         required: false
         default: false
         type: boolean
+      force-reinitialize:
+        description: >-
+          Rewrite the frozen execution plan from the epic's Ordered sub-issues
+          section. Leave unchecked for a normal idempotent rerun.
+        required: false
+        default: false
+        type: boolean
   pull_request:
     types: [closed, opened, reopened]
 
@@ -74,3 +81,6 @@ jobs:
           # Only present on workflow_dispatch; ignored for merged-PR runs.
           epic-issue: ${{ github.event.inputs.epic-issue }}
           dry-run: ${{ github.event.inputs.dry-run }}
+          # Only honored on workflow_dispatch; a continuation run never rewrites
+          # the frozen plan.
+          force-reinitialize: ${{ github.event.inputs.force-reinitialize }}

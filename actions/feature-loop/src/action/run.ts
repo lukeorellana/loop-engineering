@@ -175,6 +175,7 @@ export async function executeAction(
     request: {
       event: buildEventInput(env.event, inputs.epicIssue),
       dryRun: inputs.dryRun,
+      forceReinitialize: inputs.forceReinitialize,
     },
     ...(inputs.configPath !== undefined
       ? { configPath: inputs.configPath }

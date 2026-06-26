@@ -52033,7 +52033,7 @@ const {
   kSentClose,
   kByteParser,
   kReceivedClose
-} = __nccwpck_require__(5314)
+} = __nccwpck_require__(2933)
 const { fireEvent, failWebsocketConnection } = __nccwpck_require__(3574)
 const { CloseEvent } = __nccwpck_require__(6255)
 const { makeRequest } = __nccwpck_require__(5194)
@@ -52775,7 +52775,7 @@ module.exports = {
 const { Writable } = __nccwpck_require__(2203)
 const diagnosticsChannel = __nccwpck_require__(1637)
 const { parserStates, opcodes, states, emptyBuffer } = __nccwpck_require__(5913)
-const { kReadyState, kSentClose, kResponse, kReceivedClose } = __nccwpck_require__(5314)
+const { kReadyState, kSentClose, kResponse, kReceivedClose } = __nccwpck_require__(2933)
 const { isValidStatusCode, failWebsocketConnection, websocketMessageReceived } = __nccwpck_require__(3574)
 const { WebsocketFrameSend } = __nccwpck_require__(1237)
 
@@ -53118,7 +53118,7 @@ module.exports = {
 
 /***/ }),
 
-/***/ 5314:
+/***/ 2933:
 /***/ ((module) => {
 
 
@@ -53142,7 +53142,7 @@ module.exports = {
 
 
 
-const { kReadyState, kController, kResponse, kBinaryType, kWebSocketURL } = __nccwpck_require__(5314)
+const { kReadyState, kController, kResponse, kBinaryType, kWebSocketURL } = __nccwpck_require__(2933)
 const { states, opcodes } = __nccwpck_require__(5913)
 const { MessageEvent, ErrorEvent } = __nccwpck_require__(6255)
 
@@ -53362,7 +53362,7 @@ const {
   kResponse,
   kSentClose,
   kByteParser
-} = __nccwpck_require__(5314)
+} = __nccwpck_require__(2933)
 const { isEstablished, isClosing, isValidSubprotocol, failWebsocketConnection, fireEvent } = __nccwpck_require__(3574)
 const { establishWebSocketConnection } = __nccwpck_require__(8550)
 const { WebsocketFrameSend } = __nccwpck_require__(1237)
@@ -69147,52 +69147,52 @@ function sanitizeError(operation, error) {
     return new RepositoryApiError(operation, codeForStatus(status), status);
 }
 
-;// CONCATENATED MODULE: ./src/domain/issue-state-resolution.ts
+;// CONCATENATED MODULE: ./src/domain/issue-source.ts
 /**
- * Pure canonical-state resolution.
+ * Deterministic issue-source resolution.
  *
- * Translates the raw GitHub status of an issue (open/closed, close reason, and
- * the label names present) into the single canonical {@link IssueState} the loop
- * reasons about, using the configurable label mapping. This is pure: it performs
- * no I/O and is fully determined by its inputs.
- *
- * The "exactly one canonical state label" invariant is enforced here: an open
- * issue carrying more than one canonical-state label resolves to `invalid`
- * (fail closed).
+ * Given the configured {@link IssueSource} and the ordered sub-issue numbers
+ * discovered from native GitHub sub-issues and from the Markdown section, decide
+ * which ordered list controls the loop. This is pure preflight logic; it does
+ * not read from GitHub and does not select an individual issue.
  */
-/**
- * Resolve the single canonical state for an issue.
- *
- * Closed issues are resolved from their close reason: `not-planned` maps to
- * `not-planned`; any other close reason maps to `done`. Open issues are resolved
- * from the canonical-state labels present: none maps to `todo`, exactly one maps
- * to that label's state, and more than one maps to `invalid`.
- */
-function resolveIssueState(status, labels) {
-    const byLabel = new Map();
-    for (const [state, label] of Object.entries(labels)) {
-        byLabel.set(label, state);
+function listsEqual(a, b) {
+    if (a.length !== b.length) {
+        return false;
     }
-    const present = [];
-    for (const name of status.labelNames) {
-        if (byLabel.has(name) && !present.includes(name)) {
-            present.push(name);
+    return a.every((value, index) => value === b[index]);
+}
+/**
+ * Resolve the controlling ordered sub-issue list.
+ *
+ * - `native`: always use the native list.
+ * - `markdown`: always use the Markdown list.
+ * - `auto`: use native when non-empty; otherwise Markdown. When both are
+ *   non-empty and differ, fail preflight (fail closed).
+ */
+function resolveIssueSource(source, native, markdown) {
+    switch (source) {
+        case 'native':
+            return { ok: true, source: 'native', issues: native };
+        case 'markdown':
+            return { ok: true, source: 'markdown', issues: markdown };
+        case 'auto': {
+            const nativeNonEmpty = native.length > 0;
+            const markdownNonEmpty = markdown.length > 0;
+            if (nativeNonEmpty && markdownNonEmpty && !listsEqual(native, markdown)) {
+                return {
+                    ok: false,
+                    reason: 'ambiguous-sources',
+                    message: 'Native sub-issues and the Markdown section are both present but differ. ' +
+                        'Resolve the mismatch or set "issues.source" explicitly.',
+                };
+            }
+            if (nativeNonEmpty) {
+                return { ok: true, source: 'native', issues: native };
+            }
+            return { ok: true, source: 'markdown', issues: markdown };
         }
     }
-    if (!status.open) {
-        const state = status.closedReason === 'not-planned' ? 'not-planned' : 'done';
-        return { state, canonicalStateLabels: present };
-    }
-    if (present.length > 1) {
-        return { state: 'invalid', canonicalStateLabels: present };
-    }
-    if (present.length === 1) {
-        return {
-            state: byLabel.get(present[0]),
-            canonicalStateLabels: present,
-        };
-    }
-    return { state: 'todo', canonicalStateLabels: present };
 }
 
 ;// CONCATENATED MODULE: ./src/domain/markdown.ts
@@ -69308,6 +69308,200 @@ function crossRepository(found, repo) {
     };
 }
 
+;// CONCATENATED MODULE: ./src/domain/issue-state-resolution.ts
+/**
+ * Pure canonical-state resolution.
+ *
+ * Translates the raw GitHub status of an issue (open/closed, close reason, and
+ * the label names present) into the single canonical {@link IssueState} the loop
+ * reasons about, using the configurable label mapping. This is pure: it performs
+ * no I/O and is fully determined by its inputs.
+ *
+ * The "exactly one canonical state label" invariant is enforced here: an open
+ * issue carrying more than one canonical-state label resolves to `invalid`
+ * (fail closed).
+ */
+/**
+ * Resolve the single canonical state for an issue.
+ *
+ * Closed issues are resolved from their close reason: `not-planned` maps to
+ * `not-planned`; any other close reason maps to `done`. Open issues are resolved
+ * from the canonical-state labels present: none maps to `todo`, exactly one maps
+ * to that label's state, and more than one maps to `invalid`.
+ */
+function resolveIssueState(status, labels) {
+    const byLabel = new Map();
+    for (const [state, label] of Object.entries(labels)) {
+        byLabel.set(label, state);
+    }
+    const present = [];
+    for (const name of status.labelNames) {
+        if (byLabel.has(name) && !present.includes(name)) {
+            present.push(name);
+        }
+    }
+    if (!status.open) {
+        const state = status.closedReason === 'not-planned' ? 'not-planned' : 'done';
+        return { state, canonicalStateLabels: present };
+    }
+    if (present.length > 1) {
+        return { state: 'invalid', canonicalStateLabels: present };
+    }
+    if (present.length === 1) {
+        return {
+            state: byLabel.get(present[0]),
+            canonicalStateLabels: present,
+        };
+    }
+    return { state: 'todo', canonicalStateLabels: present };
+}
+
+// EXTERNAL MODULE: external "node:crypto"
+var external_node_crypto_ = __nccwpck_require__(7598);
+;// CONCATENATED MODULE: ./src/domain/plan.ts
+/**
+ * The frozen Feature Loop execution plan.
+ *
+ * Once an epic is initialized, the ordered sub-issue list is the execution
+ * contract: native GitHub sub-issues are only the visible operational
+ * representation of that contract. These helpers are pure — they validate an
+ * authored ordered issue list, derive a stable plan hash, and detect drift
+ * between a persisted plan and the live native hierarchy. They perform no I/O.
+ */
+
+/** The only execution-plan schema version this build understands. */
+const PLAN_VERSION = 1;
+/**
+ * Validate the authored ordered issue list for an epic, failing closed.
+ *
+ * Rejects an empty list, non-positive or non-integer references, duplicate issue
+ * numbers, and the epic appearing as one of its own sub-issues. Existence and
+ * same-repository checks require I/O and are performed by the initializer.
+ */
+function validatePlannedIssues(epicNumber, issues) {
+    const messages = [];
+    if (issues.length === 0) {
+        messages.push('The epic has no ordered sub-issues to initialize.');
+    }
+    const invalid = issues.filter((value) => !Number.isInteger(value) || value <= 0);
+    if (invalid.length > 0) {
+        messages.push(`Ordered sub-issue references must be positive integers; found: ${invalid.join(', ')}.`);
+    }
+    const seen = new Set();
+    const duplicates = new Set();
+    for (const value of issues) {
+        if (seen.has(value)) {
+            duplicates.add(value);
+        }
+        seen.add(value);
+    }
+    if (duplicates.size > 0) {
+        messages.push(`Duplicate sub-issue references are not allowed: ${[...duplicates]
+            .sort((a, b) => a - b)
+            .map((n) => `#${n}`)
+            .join(', ')}.`);
+    }
+    if (issues.includes(epicNumber)) {
+        messages.push(`Epic #${epicNumber} cannot appear as one of its own sub-issues.`);
+    }
+    if (messages.length > 0) {
+        return { ok: false, messages };
+    }
+    return { ok: true };
+}
+/**
+ * Derive a stable content hash over the epic and its ordered issue list.
+ *
+ * The hash is computed over a canonical JSON representation so that the same
+ * epic and order always produce the same value, and any change to the order or
+ * membership changes the hash.
+ */
+function computePlanHash(epicNumber, issues) {
+    const canonical = JSON.stringify({ epic: epicNumber, issues });
+    const digest = (0,external_node_crypto_.createHash)('sha256').update(canonical).digest('hex');
+    return `sha256:${digest}`;
+}
+/**
+ * Build a frozen {@link ExecutionPlan} from an epic and its ordered issues.
+ */
+function buildExecutionPlan(epicNumber, issues) {
+    return {
+        version: PLAN_VERSION,
+        epic: epicNumber,
+        issues: [...issues],
+        planHash: computePlanHash(epicNumber, issues),
+        initialized: true,
+    };
+}
+/**
+ * Decode an untrusted value into an {@link ExecutionPlan}, or `null` when the
+ * value is not a well-formed plan of the supported version with a hash that
+ * matches its contents.
+ */
+function decodeExecutionPlan(value) {
+    if (typeof value !== 'object' || value === null) {
+        return null;
+    }
+    const candidate = value;
+    if (candidate.version !== PLAN_VERSION) {
+        return null;
+    }
+    if (typeof candidate.epic !== 'number' || !Number.isInteger(candidate.epic)) {
+        return null;
+    }
+    if (!Array.isArray(candidate.issues) ||
+        !candidate.issues.every((item) => typeof item === 'number' && Number.isInteger(item))) {
+        return null;
+    }
+    if (typeof candidate.planHash !== 'string') {
+        return null;
+    }
+    const issues = candidate.issues;
+    if (computePlanHash(candidate.epic, issues) !== candidate.planHash) {
+        return null;
+    }
+    return {
+        version: PLAN_VERSION,
+        epic: candidate.epic,
+        issues,
+        planHash: candidate.planHash,
+        initialized: candidate.initialized === true,
+    };
+}
+/** Whether two ordered number lists are identical. */
+function plan_listsEqual(a, b) {
+    return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+/**
+ * Detect whether the live native sub-issue order has drifted away from the
+ * frozen plan. A continuation run must never silently repair drift; it pauses
+ * for a human instead.
+ */
+function detectPlanDrift(plan, nativeSubIssueNumbers) {
+    if (plan_listsEqual(plan.issues, nativeSubIssueNumbers)) {
+        return { drifted: false };
+    }
+    return {
+        drifted: true,
+        message: `The native sub-issue hierarchy for epic #${plan.epic} no longer matches ` +
+            `the frozen execution plan. Expected [${plan.issues.join(', ')}] but found [${nativeSubIssueNumbers.join(', ')}]. ` +
+            'Resolve the drift or reinitialize the epic.',
+    };
+}
+
+;// CONCATENATED MODULE: ./src/domain/index.ts
+
+
+
+
+
+
+
+
+
+
+
+
 ;// CONCATENATED MODULE: ./src/adapters/github/status-comment.ts
 /**
  * Hidden machine-readable markers for status comments.
@@ -69335,6 +69529,61 @@ function hasStatusMarker(commentBody, marker) {
     return commentBody.includes(status_comment_statusMarkerToken(marker));
 }
 
+;// CONCATENATED MODULE: ./src/adapters/github/plan-comment.ts
+/**
+ * Hidden machine-readable persistence of the frozen execution plan.
+ *
+ * The initialization plan is stored using the same status-comment mechanism as
+ * other Feature Loop state: a dedicated per-epic marker scopes a comment whose
+ * body embeds the plan JSON inside an HTML comment, invisible in rendered
+ * Markdown but recoverable on later runs. These helpers are pure.
+ */
+
+/** The logical marker name used to scope a per-epic plan comment. */
+function epicPlanMarker(epicNumber) {
+    return `plan-${epicNumber}`;
+}
+// The payload is embedded inside an HTML comment. JSON never contains the `-->`
+// sequence, so it is always safe to embed and recover.
+const DATA_PREFIX = '<!-- feature-loop:plan:';
+const DATA_SUFFIX = ' -->';
+const DATA_PATTERN = /<!-- feature-loop:plan:(.*?) -->/s;
+/** Serialize an execution plan into a hidden HTML comment token. */
+function encodePlanData(plan) {
+    return `${DATA_PREFIX}${JSON.stringify(plan)}${DATA_SUFFIX}`;
+}
+/**
+ * Recover the execution plan embedded in a comment body, or `null` when no
+ * valid plan is present.
+ */
+function decodePlanData(body) {
+    if (body === null) {
+        return null;
+    }
+    const match = DATA_PATTERN.exec(body);
+    if (match === null) {
+        return null;
+    }
+    try {
+        return decodeExecutionPlan(JSON.parse(match[1]));
+    }
+    catch {
+        return null;
+    }
+}
+/**
+ * Build the human-readable body of a plan comment, with the machine-readable
+ * plan payload embedded as a hidden HTML comment.
+ */
+function buildPlanCommentBody(plan) {
+    const issues = plan.issues.map((n) => `#${n}`).join(', ');
+    return (`${encodePlanData(plan)}\n\n` +
+        `Feature Loop initialized epic #${plan.epic} with a frozen execution plan ` +
+        `of ${plan.issues.length} ordered sub-issue${plan.issues.length === 1 ? '' : 's'}: ${issues}. ` +
+        'Later runs follow this plan; intentional changes require explicit ' +
+        'reinitialization.');
+}
+
 ;// CONCATENATED MODULE: ./src/adapters/github/repository-adapter.ts
 /**
  * GitHub repository adapter.
@@ -69348,6 +69597,7 @@ function hasStatusMarker(commentBody, marker) {
  * never come from a pull-request head, a fork, an arbitrary ref, or checked-out
  * pull-request code.
  */
+
 
 
 
@@ -69480,6 +69730,39 @@ class GitHubRepositoryAdapter {
     async getNativeSubIssueNumbers(epicNumber) {
         const refs = await this.collectAll('list native sub-issues', (page) => this.api.listSubIssues(epicNumber, page));
         return refs.map((ref) => ref.number);
+    }
+    async getIssueIdentity(issueNumber) {
+        const nodeId = await this.run('get issue identity', () => this.api.getIssueNodeId(issueNumber));
+        if (nodeId === null) {
+            return null;
+        }
+        return { number: issueNumber, nodeId };
+    }
+    async getInitializationPlan(epicNumber) {
+        const body = await this.getStatusComment(epicNumber, epicPlanMarker(epicNumber));
+        return decodePlanData(body);
+    }
+    async epicNodeId(epicNumber) {
+        const nodeId = await this.run('get epic identity', () => this.api.getIssueNodeId(epicNumber));
+        if (nodeId === null) {
+            throw new Error(`Epic #${epicNumber} could not be resolved.`);
+        }
+        return nodeId;
+    }
+    async addSubIssue(epicNumber, subIssueId, replaceParent) {
+        const parentId = await this.epicNodeId(epicNumber);
+        await this.run('add sub-issue', () => this.api.addSubIssue(parentId, subIssueId, replaceParent));
+    }
+    async removeSubIssue(epicNumber, subIssueId) {
+        const parentId = await this.epicNodeId(epicNumber);
+        await this.run('remove sub-issue', () => this.api.removeSubIssue(parentId, subIssueId));
+    }
+    async reprioritizeSubIssue(epicNumber, subIssueId, afterId) {
+        const parentId = await this.epicNodeId(epicNumber);
+        await this.run('reprioritize sub-issue', () => this.api.reprioritizeSubIssue(parentId, subIssueId, afterId));
+    }
+    async upsertInitializationPlan(epicNumber, plan) {
+        await this.upsertStatusComment(epicNumber, epicPlanMarker(epicNumber), buildPlanCommentBody(plan));
     }
     async getParentEpicNumber(issueNumber) {
         const nativeParent = await this.run('get parent issue', () => this.api.getParentIssueNumber(issueNumber));
@@ -69872,6 +70155,35 @@ class OctokitGitHubApi {
         }
       }`, { owner: this.owner, repo: this.repo, number: issueNumber });
         return result.repository?.issue?.parent?.number ?? null;
+    }
+    async getIssueNodeId(issueNumber) {
+        const result = await this.octokit.graphql(`query($owner:String!,$repo:String!,$number:Int!){
+        repository(owner:$owner,name:$repo){
+          issue(number:$number){ id }
+        }
+      }`, { owner: this.owner, repo: this.repo, number: issueNumber });
+        return result.repository?.issue?.id ?? null;
+    }
+    async addSubIssue(parentId, subIssueId, replaceParent) {
+        await this.octokit.graphql(`mutation($issueId:ID!,$subIssueId:ID!,$replaceParent:Boolean){
+        addSubIssue(input:{issueId:$issueId,subIssueId:$subIssueId,replaceParent:$replaceParent}){
+          clientMutationId
+        }
+      }`, { issueId: parentId, subIssueId, replaceParent });
+    }
+    async removeSubIssue(parentId, subIssueId) {
+        await this.octokit.graphql(`mutation($issueId:ID!,$subIssueId:ID!){
+        removeSubIssue(input:{issueId:$issueId,subIssueId:$subIssueId}){
+          clientMutationId
+        }
+      }`, { issueId: parentId, subIssueId });
+    }
+    async reprioritizeSubIssue(parentId, subIssueId, afterId) {
+        await this.octokit.graphql(`mutation($issueId:ID!,$subIssueId:ID!,$afterId:ID){
+        reprioritizeSubIssue(input:{issueId:$issueId,subIssueId:$subIssueId,afterId:$afterId}){
+          clientMutationId
+        }
+      }`, { issueId: parentId, subIssueId, afterId });
     }
     async getPullRequest(pullNumber) {
         let data;
@@ -71336,53 +71648,230 @@ function decideLoop(epic, evaluation) {
     return { outcome: 'complete', epic };
 }
 
-;// CONCATENATED MODULE: ./src/domain/issue-source.ts
+;// CONCATENATED MODULE: ./src/initializer/initialize-epic.ts
 /**
- * Deterministic issue-source resolution.
+ * Idempotent epic initialization.
  *
- * Given the configured {@link IssueSource} and the ordered sub-issue numbers
- * discovered from native GitHub sub-issues and from the Markdown section, decide
- * which ordered list controls the loop. This is pure preflight logic; it does
- * not read from GitHub and does not select an individual issue.
+ * The initial manual run normalizes an epic exactly once and persists a frozen
+ * execution plan. {@link initializeEpic} follows a strict transactional pattern:
+ *
+ *     read desired state
+ *     -> calculate mutations
+ *     -> apply only missing changes
+ *     -> re-read
+ *     -> verify exact match
+ *     -> persist the initialized marker last
+ *
+ * It is safe to rerun after a partial failure: every mutation is idempotent and
+ * the plan is only persisted after the native hierarchy is verified. Later runs
+ * read the persisted plan instead of re-resolving competing issue sources.
  */
-function listsEqual(a, b) {
-    if (a.length !== b.length) {
-        return false;
-    }
-    return a.every((value, index) => value === b[index]);
+
+function initialize_epic_listsEqual(a, b) {
+    return a.length === b.length && a.every((value, index) => value === b[index]);
 }
 /**
- * Resolve the controlling ordered sub-issue list.
- *
- * - `native`: always use the native list.
- * - `markdown`: always use the Markdown list.
- * - `auto`: use native when non-empty; otherwise Markdown. When both are
- *   non-empty and differ, fail preflight (fail closed).
+ * Run the idempotent epic initialization transaction.
  */
-function resolveIssueSource(source, native, markdown) {
-    switch (source) {
-        case 'native':
-            return { ok: true, source: 'native', issues: native };
-        case 'markdown':
-            return { ok: true, source: 'markdown', issues: markdown };
-        case 'auto': {
-            const nativeNonEmpty = native.length > 0;
-            const markdownNonEmpty = markdown.length > 0;
-            if (nativeNonEmpty && markdownNonEmpty && !listsEqual(native, markdown)) {
+async function initializeEpic(input) {
+    const { repository, logger, epicNumber, intendedIssues, labels, exactSync, dryRun, forceReinitialize, } = input;
+    // A normal rerun of an already-initialized epic is idempotent: the persisted
+    // plan is the execution contract and is not rewritten unless reinitialization
+    // was explicitly requested.
+    const existing = await repository.getInitializationPlan(epicNumber);
+    if (existing !== null && !forceReinitialize) {
+        logger.info('Feature Loop: epic already initialized', { epic: epicNumber });
+        return {
+            kind: 'already-initialized',
+            plan: existing,
+            details: [
+                `Epic #${epicNumber} is already initialized with ${existing.issues.length} planned issue(s).`,
+            ],
+        };
+    }
+    // Validate the authored list before any I/O-dependent checks.
+    const validation = validatePlannedIssues(epicNumber, intendedIssues);
+    if (!validation.ok) {
+        return {
+            kind: 'failed',
+            reason: 'initialization-failed',
+            messages: validation.messages,
+        };
+    }
+    // Verify existence and resolve the node id of every planned issue.
+    const nodeIds = new Map();
+    for (const issueNumber of intendedIssues) {
+        const identity = await repository.getIssueIdentity(issueNumber);
+        if (identity === null) {
+            return {
+                kind: 'failed',
+                reason: 'initialization-failed',
+                messages: [
+                    `Planned sub-issue #${issueNumber} was not found in this repository.`,
+                ],
+            };
+        }
+        nodeIds.set(issueNumber, identity.nodeId);
+    }
+    // Read the native parent of every planned issue and calculate attach/reparent
+    // mutations.
+    const attach = [];
+    for (const issueNumber of intendedIssues) {
+        const parent = await repository.getParentEpicNumber(issueNumber);
+        if (parent === epicNumber) {
+            continue;
+        }
+        attach.push({ number: issueNumber, replaceParent: parent !== null });
+    }
+    // Calculate unexpected native sub-issues to remove under exact synchronization.
+    const nativeBefore = await repository.getNativeSubIssueNumbers(epicNumber);
+    const plannedSet = new Set(intendedIssues);
+    const unexpected = exactSync
+        ? nativeBefore.filter((number) => !plannedSet.has(number))
+        : [];
+    // Read canonical state and calculate normalization mutations. An unexpected
+    // active (in-progress) issue fails closed unless this is an explicit recovery.
+    const epicState = await repository.getEpicWithSubIssues(epicNumber, intendedIssues);
+    if (epicState === null) {
+        return {
+            kind: 'failed',
+            reason: 'initialization-failed',
+            messages: [`Epic #${epicNumber} could not be loaded for initialization.`],
+        };
+    }
+    const stateChanges = [];
+    for (const sub of epicState.subIssues) {
+        if (sub.open) {
+            if (sub.canonicalStateLabels.length === 1 &&
+                sub.canonicalStateLabels[0] === labels['in-progress'] &&
+                !forceReinitialize) {
                 return {
-                    ok: false,
-                    reason: 'ambiguous-sources',
-                    message: 'Native sub-issues and the Markdown section are both present but differ. ' +
-                        'Resolve the mismatch or set "issues.source" explicitly.',
+                    kind: 'unexpected-active-issue',
+                    issueNumber: sub.number,
+                    messages: [
+                        `Issue #${sub.number} is already marked in-progress before initialization. ` +
+                            'Resolve the active work, or reinitialize explicitly to recover.',
+                    ],
                 };
             }
-            if (nativeNonEmpty) {
-                return { ok: true, source: 'native', issues: native };
-            }
-            return { ok: true, source: 'markdown', issues: markdown };
+            // Open issues with no canonical label are canonically `todo`; deliberate
+            // blocked/needs-human and an invalid multi-label state are preserved for
+            // the state machine to handle.
+            continue;
+        }
+        const desired = sub.closedReason === 'not-planned' ? labels['not-planned'] : labels.done;
+        const present = sub.canonicalStateLabels;
+        const consistent = present.length === 1 && present[0] === desired;
+        if (!consistent) {
+            stateChanges.push({ number: sub.number, label: desired });
         }
     }
+    // Determine whether native ordering already matches the plan (so an already
+    // ordered epic performs no reorder writes).
+    const expectedMembership = exactSync
+        ? intendedIssues
+        : [...intendedIssues, ...nativeBefore.filter((n) => !plannedSet.has(n))];
+    const orderMatches = attach.length === 0 &&
+        unexpected.length === 0 &&
+        initialize_epic_listsEqual(nativeBefore, expectedMembership);
+    const details = [];
+    for (const item of attach) {
+        details.push(item.replaceParent
+            ? `Reparent issue #${item.number} to epic #${epicNumber}.`
+            : `Attach issue #${item.number} to epic #${epicNumber}.`);
+    }
+    for (const number of unexpected) {
+        details.push(`Remove unexpected native sub-issue #${number} from epic #${epicNumber}.`);
+    }
+    if (!orderMatches) {
+        details.push(`Reorder native sub-issues to match [${intendedIssues.join(', ')}].`);
+    }
+    for (const change of stateChanges) {
+        details.push(`Normalize issue #${change.number} to "${change.label}".`);
+    }
+    details.push(`Persist the frozen execution plan for epic #${epicNumber}: [${intendedIssues.join(', ')}].`);
+    if (dryRun) {
+        logger.info('Feature Loop: dry-run initialization preview', {
+            epic: epicNumber,
+            changes: details.length,
+        });
+        return { kind: 'dry-run', issues: [...intendedIssues], details };
+    }
+    // Apply attach/reparent mutations.
+    for (const item of attach) {
+        const subId = nodeIds.get(item.number);
+        if (subId === undefined) {
+            continue;
+        }
+        await repository.addSubIssue(epicNumber, subId, item.replaceParent);
+        logger.info('Feature Loop: linked sub-issue to epic', {
+            epic: epicNumber,
+            issue: item.number,
+            reparented: item.replaceParent,
+        });
+    }
+    // Remove unexpected native sub-issues.
+    for (const number of unexpected) {
+        const identity = await repository.getIssueIdentity(number);
+        if (identity === null) {
+            continue;
+        }
+        await repository.removeSubIssue(epicNumber, identity.nodeId);
+        logger.info('Feature Loop: removed unexpected native sub-issue', {
+            epic: epicNumber,
+            issue: number,
+        });
+    }
+    // Reorder native sub-issues to exactly match the intended order. Walking the
+    // chain so each issue immediately follows its predecessor fully determines the
+    // order when the membership is exact.
+    const nativeAfterLinks = await repository.getNativeSubIssueNumbers(epicNumber);
+    if (!initialize_epic_listsEqual(nativeAfterLinks, intendedIssues)) {
+        for (let index = 1; index < intendedIssues.length; index += 1) {
+            const subId = nodeIds.get(intendedIssues[index]);
+            const afterId = nodeIds.get(intendedIssues[index - 1]);
+            if (subId === undefined || afterId === undefined) {
+                continue;
+            }
+            await repository.reprioritizeSubIssue(epicNumber, subId, afterId);
+        }
+    }
+    // Apply canonical state normalization.
+    for (const change of stateChanges) {
+        await repository.setCanonicalState(change.number, change.label);
+        logger.info('Feature Loop: normalized issue state', {
+            issue: change.number,
+            label: change.label,
+        });
+    }
+    // Re-read and verify the final native hierarchy before persisting the plan.
+    const nativeFinal = await repository.getNativeSubIssueNumbers(epicNumber);
+    const verified = exactSync
+        ? initialize_epic_listsEqual(nativeFinal, intendedIssues)
+        : intendedIssues.every((number) => nativeFinal.includes(number));
+    if (!verified) {
+        return {
+            kind: 'failed',
+            reason: 'initialization-failed',
+            messages: [
+                `Epic #${epicNumber} hierarchy verification failed after initialization. ` +
+                    `Expected [${intendedIssues.join(', ')}] but found [${nativeFinal.join(', ')}].`,
+            ],
+        };
+    }
+    // Persist the frozen execution plan last.
+    const plan = buildExecutionPlan(epicNumber, intendedIssues);
+    await repository.upsertInitializationPlan(epicNumber, plan);
+    logger.info('Feature Loop: epic initialized', {
+        epic: epicNumber,
+        issues: intendedIssues.length,
+        reinitialized: forceReinitialize,
+    });
+    return { kind: 'initialized', plan, details };
 }
+
+;// CONCATENATED MODULE: ./src/initializer/index.ts
+
 
 ;// CONCATENATED MODULE: ./src/preflight/index.ts
 /**
@@ -71642,6 +72131,8 @@ function readOnlyRepository(repository) {
         getEpic: (epicNumber) => repository.getEpic(epicNumber),
         getEpicWithSubIssues: (epicNumber, numbers) => repository.getEpicWithSubIssues(epicNumber, numbers),
         getNativeSubIssueNumbers: (epicNumber) => repository.getNativeSubIssueNumbers(epicNumber),
+        getIssueIdentity: (issueNumber) => repository.getIssueIdentity(issueNumber),
+        getInitializationPlan: (epicNumber) => repository.getInitializationPlan(epicNumber),
         getParentEpicNumber: (issueNumber) => repository.getParentEpicNumber(issueNumber),
         getMarkdownSubIssueNumbers: (epicNumber, heading) => repository.getMarkdownSubIssueNumbers(epicNumber, heading),
         getCanonicalStateLabels: (issueNumber, canonicalLabels) => repository.getCanonicalStateLabels(issueNumber, canonicalLabels),
@@ -71657,6 +72148,10 @@ function readOnlyRepository(repository) {
         updatePullRequestBody: async () => undefined,
         createLabel: async () => undefined,
         upsertStatusComment: async () => undefined,
+        addSubIssue: async () => undefined,
+        removeSubIssue: async () => undefined,
+        reprioritizeSubIssue: async () => undefined,
+        upsertInitializationPlan: async () => undefined,
     };
 }
 
@@ -71681,14 +72176,14 @@ function epicStatusMarker(epicNumber) {
 }
 // The payload is embedded inside an HTML comment. JSON never contains the `-->`
 // sequence, so it is always safe to embed and recover.
-const DATA_PREFIX = '<!-- feature-loop:data:';
-const DATA_SUFFIX = ' -->';
-const DATA_PATTERN = /<!-- feature-loop:data:(.*?) -->/s;
+const status_DATA_PREFIX = '<!-- feature-loop:data:';
+const status_DATA_SUFFIX = ' -->';
+const status_DATA_PATTERN = /<!-- feature-loop:data:(.*?) -->/s;
 /**
  * Serialize a status payload into a hidden HTML comment token.
  */
 function encodeStatusData(data) {
-    return `${DATA_PREFIX}${JSON.stringify(data)}${DATA_SUFFIX}`;
+    return `${status_DATA_PREFIX}${JSON.stringify(data)}${status_DATA_SUFFIX}`;
 }
 /**
  * Recover the machine-readable status payload embedded in a comment body, or
@@ -71698,7 +72193,7 @@ function decodeStatusData(body) {
     if (body === null) {
         return null;
     }
-    const match = DATA_PATTERN.exec(body);
+    const match = status_DATA_PATTERN.exec(body);
     if (match === null) {
         return null;
     }
@@ -71758,6 +72253,8 @@ function epicStatusMarkerToken(epicNumber) {
 
 
 
+
+
 function controller_dedupe(values) {
     const seen = new Set();
     const result = [];
@@ -71807,6 +72304,7 @@ class Controller {
     clock;
     logger;
     dryRun;
+    forceReinitialize;
     configPath;
     event;
     // Resolved during preflight.
@@ -71818,6 +72316,8 @@ class Controller {
     evaluation;
     // Set when a trusted merged pull request completes a prior sub-issue.
     completedIssueNumber;
+    // Details from epic initialization, surfaced on the final result.
+    initDetails = [];
     constructor(input) {
         // Dry-run uses a read-only repository view so the zero-write invariant holds
         // by construction, even for code paths without an explicit dry-run guard.
@@ -71828,11 +72328,17 @@ class Controller {
         this.clock = input.clock;
         this.logger = input.logger;
         this.dryRun = input.request.dryRun;
+        this.forceReinitialize = input.request.forceReinitialize ?? false;
         this.configPath = input.configPath;
         this.event = input.request.event;
     }
     async run() {
-        const result = await this.runLoop();
+        let result = await this.runLoop();
+        // Surface initialization details (e.g. epic-initialized / already-initialized)
+        // on the final result so manual dispatch reports what the transaction did.
+        if (this.initDetails.length > 0) {
+            result = { ...result, details: [...this.initDetails, ...result.details] };
+        }
         // Surface the issue completed from a trusted merged pull request on every
         // exit path that continued past the completion (start, already-running,
         // complete, no-op, or pause), without overwriting an explicit value.
@@ -71929,6 +72435,22 @@ class Controller {
                 details: [...providerPreflight.messages],
             };
         }
+        // 2 (continued). Epic plan: a manual dispatch initializes (or verifies) the
+        // frozen execution plan; a continuation run reads the frozen plan and pauses
+        // on drift. Both establish the controlling ordered issue list before any
+        // epic read so the loop never re-resolves competing issue sources.
+        if (resolved.kind === 'manual') {
+            const initialized = await this.initializeEpicPlan(pre.issues);
+            if (initialized !== null) {
+                return initialized;
+            }
+        }
+        else {
+            const continued = await this.loadFrozenPlanForContinuation();
+            if (continued !== null) {
+                return continued;
+            }
+        }
         // Read: load the epic with the controlling ordered sub-issue list.
         const epic = await this.loadEpic();
         // 3. Complete the prior active issue when a trusted merged PR applies.
@@ -71942,6 +72464,98 @@ class Controller {
         await this.reconcileStaleLabels(epic);
         // 6–11. Decide and act.
         return this.decideAndDispatch(true);
+    }
+    /**
+     * Initialize (or verify) the frozen execution plan for a manual dispatch.
+     *
+     * Returns a terminal {@link OrchestratorResult} when initialization fails
+     * closed or pauses for human attention; otherwise returns `null` after the
+     * controlling ordered issue list has been established from the frozen plan.
+     */
+    async initializeEpicPlan(intendedIssues) {
+        const result = await initializeEpic({
+            repository: this.repository,
+            logger: this.logger,
+            epicNumber: this.epicNumber,
+            intendedIssues,
+            labels: this.labels,
+            exactSync: true,
+            dryRun: this.dryRun,
+            forceReinitialize: this.forceReinitialize,
+        });
+        switch (result.kind) {
+            case 'failed':
+                return {
+                    outcome: 'configuration-error',
+                    reasonCode: 'initialization-failed',
+                    dryRun: this.dryRun,
+                    epicNumber: this.epicNumber,
+                    details: [...result.messages],
+                };
+            case 'unexpected-active-issue':
+                await this.postStatus(this.epicNumber, {
+                    state: 'needs-human',
+                    reason: 'unexpected-active-issue',
+                    humanText: result.messages.join(' '),
+                });
+                return {
+                    outcome: 'needs-human',
+                    reasonCode: 'unexpected-active-issue',
+                    dryRun: this.dryRun,
+                    epicNumber: this.epicNumber,
+                    issueNumber: result.issueNumber,
+                    details: [...result.messages],
+                };
+            case 'dry-run':
+                this.issues = result.issues;
+                this.initDetails = result.details;
+                return null;
+            case 'already-initialized':
+                this.issues = result.plan.issues;
+                this.initDetails = result.details;
+                return null;
+            case 'initialized':
+                this.issues = result.plan.issues;
+                this.initDetails = result.details;
+                return null;
+        }
+    }
+    /**
+     * Load the frozen execution plan for a continuation run and verify the native
+     * hierarchy has not drifted. Returns a terminal {@link OrchestratorResult}
+     * when the plan and native hierarchy differ (`plan-drift`); otherwise returns
+     * `null` after adopting the planned order, or leaves the preflight-resolved
+     * order in place when no plan has been persisted yet.
+     */
+    async loadFrozenPlanForContinuation() {
+        const plan = await this.repository.getInitializationPlan(this.epicNumber);
+        if (plan === null) {
+            // Backward compatible: an epic initialized before this feature continues
+            // on the preflight-resolved order.
+            return null;
+        }
+        this.issues = plan.issues;
+        const nativeOrder = await this.repository.getNativeSubIssueNumbers(this.epicNumber);
+        const drift = detectPlanDrift(plan, nativeOrder);
+        if (drift.drifted) {
+            const messages = [
+                drift.message,
+                'Reinitialize the epic with force-reinitialize to adopt the new hierarchy.',
+            ];
+            await this.postStatus(this.epicNumber, {
+                state: 'needs-human',
+                reason: 'plan-drift',
+                humanText: messages.join(' '),
+            });
+            return {
+                outcome: 'needs-human',
+                reasonCode: 'plan-drift',
+                dryRun: this.dryRun,
+                epicNumber: this.epicNumber,
+                details: messages,
+            };
+        }
+        return null;
     }
     /**
      * Decide on freshly read state and dispatch the resulting action. When
@@ -72630,6 +73244,7 @@ function readActionInputs(core) {
     const agentToken = agentTokenRaw === '' ? githubToken : agentTokenRaw;
     const epicIssue = parseEpicIssue(core.getInput('epic-issue'), errors);
     const dryRun = parseBoolean(core.getInput('dry-run'), 'dry-run', errors);
+    const forceReinitialize = parseBoolean(core.getInput('force-reinitialize'), 'force-reinitialize', errors);
     const configPathRaw = core.getInput('config-path').trim();
     if (errors.length > 0) {
         return { ok: false, messages: errors };
@@ -72641,6 +73256,7 @@ function readActionInputs(core) {
             agentToken,
             epicIssue,
             dryRun,
+            forceReinitialize,
             configPath: configPathRaw === '' ? undefined : configPathRaw,
         },
     };
@@ -72797,6 +73413,7 @@ async function executeAction(env) {
         request: {
             event: buildEventInput(env.event, inputs.epicIssue),
             dryRun: inputs.dryRun,
+            forceReinitialize: inputs.forceReinitialize,
         },
         ...(inputs.configPath !== undefined
             ? { configPath: inputs.configPath }

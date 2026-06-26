@@ -181,13 +181,29 @@ to the job summary with `outcome: dry-run`.
 
 ## 10. Start the loop
 
-Run the workflow again with **dry-run** `false` (or leave it unset). The loop
-starts the first `todo` sub-issue by assigning it to the coding agent and
-labeling it `in-progress`. When the coding agent opens its pull request, the
-`pull_request: opened` trigger records a formal `Closes #<issue>` relationship
-with the active sub-issue (when one is unambiguous) so the merge can complete it.
-After a human merges the sub-issue's pull request, the `pull_request: closed`
-trigger continues the loop automatically.
+Run the workflow again with **dry-run** `false` (or leave it unset). The first
+manual run **initializes** the epic: it resolves the intended ordered sub-issue
+list, repairs native parent/sub-issue relationships, reorders native sub-issues
+to match the authored order, normalizes canonical state labels, verifies the
+resulting hierarchy, and persists a **frozen execution plan** on the epic. Only
+after verification succeeds does it start the first eligible sub-issue by
+assigning it to the coding agent and labeling it `in-progress`.
+
+Initialization is idempotent: rerunning the workflow on an already-initialized
+epic reuses the stored plan and does not rewrite it. To intentionally re-author
+the plan after changing the epic's ordered sub-issues, run the workflow with
+**force-reinitialize** set to `true`.
+
+When the coding agent opens its pull request, the `pull_request: opened` trigger
+records a formal `Closes #<issue>` relationship with the active sub-issue (when
+one is unambiguous) so the merge can complete it. After a human merges the
+sub-issue's pull request, the `pull_request: closed` trigger continues the loop
+automatically: it loads the frozen plan, completes the merged sub-issue, and
+starts the next planned issue. A continuation run never re-resolves competing
+issue sources or rewrites the plan. If the native sub-issue hierarchy has
+drifted away from the frozen plan, the loop pauses with `needs-human` and a
+`plan-drift` reason instead of starting a potentially incorrect issue; resolve
+the drift or rerun manually with **force-reinitialize**.
 
 ## 11. Verify a healthy run
 

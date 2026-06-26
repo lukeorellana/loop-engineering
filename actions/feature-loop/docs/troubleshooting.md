@@ -149,6 +149,38 @@ For each situation: symptom → cause → fix → verify (run a dry run, then re
   `issues.source: native` or `issues.source: markdown`.
 - **Verify:** Dry-run; preflight should resolve a single ordered list.
 
+### Initialization failed (uninitialized epic)
+
+- **Symptom:** `outcome: configuration-error`, reason `initialization-failed`.
+- **Cause:** A manual run could not initialize the epic: the authored ordered
+  list contains duplicate, missing, cross-repository, or self-referential issue
+  references, or a planned issue could not be found in the repository.
+- **Fix:** Correct the epic's ordered sub-issues so every reference is a unique,
+  existing issue in the same repository and the epic does not list itself.
+- **Verify:** Dry-run; the summary reports the proposed plan with zero writes.
+
+### Unexpected active issue during initialization
+
+- **Symptom:** `outcome: needs-human`, reason `unexpected-active-issue`.
+- **Cause:** A first-time initialization found a sub-issue already labeled
+  `in-progress`, which the loop will not silently adopt.
+- **Fix:** Resolve the in-progress issue (let it complete, or clear the label),
+  then rerun. To deliberately recover and re-author the plan, rerun with
+  **force-reinitialize**.
+- **Verify:** Dry-run, then re-run the manual dispatch.
+
+### Plan drift on a continuation run
+
+- **Symptom:** `outcome: needs-human`, reason `plan-drift`.
+- **Cause:** A merged-PR continuation found that the native sub-issue hierarchy
+  no longer matches the frozen execution plan persisted at initialization. A
+  continuation run never silently repairs or reorders the plan.
+- **Fix:** Restore the native sub-issue order to match the stored plan, or rerun
+  the manual workflow with **force-reinitialize** to adopt the new hierarchy as
+  the plan.
+- **Verify:** Dry-run the manual dispatch to confirm the intended plan, then
+  reinitialize.
+
 ### Closed-not-planned sub-issues
 
 - **Symptom:** `outcome: needs-human`, reason `not-planned`.

@@ -11,6 +11,7 @@
  */
 import type { Epic, PullRequestCompletionContext } from '../domain/issues.js';
 import type { MergedPullRequest } from '../domain/merged-pr.js';
+import type { ExecutionPlan } from '../domain/plan.js';
 import type { OpenedPullRequest } from '../domain/pr-link.js';
 
 /**
@@ -21,6 +22,17 @@ export interface RepositoryInfo {
   readonly owner: string;
   readonly name: string;
   readonly defaultBranch: string;
+}
+
+/**
+ * The stable identity of an issue within the repository, including the GraphQL
+ * node id used to address native sub-issue hierarchy mutations.
+ */
+export interface IssueIdentity {
+  /** The issue number. */
+  readonly number: number;
+  /** The GraphQL node id of the issue. */
+  readonly nodeId: string;
 }
 
 /**
@@ -71,6 +83,20 @@ export interface GitHubRepositoryReadPort {
 
   /** Ordered native GitHub sub-issue numbers for an epic. */
   getNativeSubIssueNumbers(epicNumber: number): Promise<readonly number[]>;
+
+  /**
+   * The stable identity (number and GraphQL node id) of an issue, or `null` when
+   * the issue does not exist in this repository. Existence within the repository
+   * is confirmed by a non-`null` result.
+   */
+  getIssueIdentity(issueNumber: number): Promise<IssueIdentity | null>;
+
+  /**
+   * The persisted frozen execution plan for an epic, or `null` when the epic has
+   * not been initialized. Used so continuation runs follow the frozen plan
+   * instead of re-resolving competing issue sources.
+   */
+  getInitializationPlan(epicNumber: number): Promise<ExecutionPlan | null>;
 
   /**
    * The native GitHub parent issue number for an issue, or `null` when the issue
@@ -161,6 +187,41 @@ export interface GitHubRepositoryWritePort {
 
   /** Close a sub-issue as completed. */
   closeIssueAsCompleted(issueNumber: number): Promise<void>;
+
+  /**
+   * Attach a planned sub-issue to the epic's native hierarchy. When
+   * `replaceParent` is `true`, an existing parent on the sub-issue is replaced
+   * (reparenting); otherwise the sub-issue must have no parent. Idempotent when
+   * the relationship already exists.
+   */
+  addSubIssue(
+    epicNumber: number,
+    subIssueId: string,
+    replaceParent: boolean,
+  ): Promise<void>;
+
+  /** Detach a native sub-issue from the epic. Idempotent when already absent. */
+  removeSubIssue(epicNumber: number, subIssueId: string): Promise<void>;
+
+  /**
+   * Reorder a native sub-issue within the epic so that it immediately follows
+   * `afterId`, or moves to the first position when `afterId` is `null`.
+   */
+  reprioritizeSubIssue(
+    epicNumber: number,
+    subIssueId: string,
+    afterId: string | null,
+  ): Promise<void>;
+
+  /**
+   * Persist the frozen execution plan for an epic. Written only after the
+   * hierarchy has been verified, using the per-epic plan marker so a prior plan
+   * comment is updated in place.
+   */
+  upsertInitializationPlan(
+    epicNumber: number,
+    plan: ExecutionPlan,
+  ): Promise<void>;
 
   /**
    * Replace the body of a pull request. Used to record a formal closing

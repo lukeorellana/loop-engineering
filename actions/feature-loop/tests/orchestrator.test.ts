@@ -3,6 +3,12 @@ import { describe, expect, it } from 'vitest';
 import { DEFAULT_CANONICAL_STATE_LABELS } from '../src/config/schema.js';
 import { GitHubRepositoryAdapter } from '../src/adapters/github/index.js';
 import {
+  buildPlanCommentBody,
+  epicPlanMarker,
+} from '../src/adapters/github/plan-comment.js';
+import { buildStatusCommentBody } from '../src/adapters/github/status-comment.js';
+import { buildExecutionPlan } from '../src/domain/plan.js';
+import {
   runFeatureLoop,
   buildStatusComment,
   epicStatusMarker,
@@ -96,6 +102,16 @@ const manual: LoopRequest = {
   dryRun: false,
 };
 
+/** Build a persisted plan comment for epic #1 with the given ordered issues. */
+function seededPlan(epicNumber: number, issues: number[]) {
+  const plan = buildExecutionPlan(epicNumber, issues);
+  const marker = epicPlanMarker(epicNumber);
+  return {
+    id: 5000,
+    body: buildStatusCommentBody(marker, buildPlanCommentBody(plan)),
+  };
+}
+
 function closedDone(number: number, labelNames: string[] = []): FakeIssue {
   return fakeIssue({
     number,
@@ -145,10 +161,13 @@ describe('runFeatureLoop — initial start', () => {
       issue: 11,
       labels: [labels['in-progress']],
     });
-    // A status comment with the hidden marker is posted on the issue.
-    expect(api.createdComments).toHaveLength(1);
-    expect(api.createdComments[0].issue).toBe(11);
-    expect(api.createdComments[0].body).toContain(epicStatusMarker(1));
+    // A status comment with the hidden marker is posted on the issue, alongside
+    // the frozen execution plan persisted on the epic during initialization.
+    expect(api.createdComments).toHaveLength(2);
+    const planComment = api.createdComments.find((c) => c.issue === 1);
+    expect(planComment?.body).toContain(epicPlanMarker(1));
+    const statusComment = api.createdComments.find((c) => c.issue === 11);
+    expect(statusComment?.body).toContain(epicStatusMarker(1));
   });
 });
 
@@ -263,6 +282,121 @@ describe('runFeatureLoop — merged pull-request continuation', () => {
     });
     expect(result.outcome).toBe('no-op');
     expect(result.reasonCode).toBe('not-merged');
+  });
+});
+
+describe('runFeatureLoop — epic initialization and frozen plan', () => {
+  it('initializes an uninitialized epic and persists the frozen plan before starting', async () => {
+    const { result, api, provider } = await run({
+      config: epicConfig([
+        fakeIssue({ number: 11 }),
+        fakeIssue({ number: 12 }),
+      ]),
+      request: manual,
+    });
+
+    expect(result.outcome).toBe('started');
+    expect(result.issueNumber).toBe(11);
+    expect(provider.startRequests[0].issue.number).toBe(11);
+    // The frozen plan is persisted on the epic with the planned order.
+    const planComment = api.createdComments.find((c) => c.issue === 1);
+    expect(planComment?.body).toContain(epicPlanMarker(1));
+  });
+
+  it('is idempotent on a manual rerun of an already-initialized epic', async () => {
+    const { result, api } = await run({
+      config: epicConfig(
+        [fakeIssue({ number: 11 }), fakeIssue({ number: 12 })],
+        {
+          comments: { 1: [seededPlan(1, [11, 12])] },
+        },
+      ),
+      request: manual,
+    });
+
+    expect(result.outcome).toBe('started');
+    expect(result.issueNumber).toBe(11);
+    // No new plan comment is created on the epic; the existing plan is reused.
+    expect(api.createdComments.filter((c) => c.issue === 1)).toHaveLength(0);
+  });
+
+  it('rewrites the plan only when reinitialization is explicitly requested', async () => {
+    const { result, api } = await run({
+      config: epicConfig(
+        [fakeIssue({ number: 11 }), fakeIssue({ number: 12 })],
+        {
+          comments: { 1: [seededPlan(1, [11])] },
+        },
+      ),
+      request: { ...manual, forceReinitialize: true },
+    });
+
+    expect(result.outcome).toBe('started');
+    // The stored plan comment is updated to reflect the reauthored order.
+    expect(
+      api.updatedComments.some((c) => c.body.includes(epicPlanMarker(1))),
+    ).toBe(true);
+  });
+
+  it('fails closed when the authored plan has duplicate issue references', async () => {
+    const { result, provider } = await run({
+      config: epicConfig([fakeIssue({ number: 11 })], {
+        subIssues: { 1: [11, 11] },
+      }),
+      request: manual,
+    });
+
+    expect(result.outcome).toBe('configuration-error');
+    expect(result.reasonCode).toBe('initialization-failed');
+    expect(provider.startRequests).toHaveLength(0);
+  });
+
+  it('pauses an uninitialized epic with an unexpected in-progress issue', async () => {
+    const { result, provider } = await run({
+      config: epicConfig([
+        fakeIssue({ number: 11, labelNames: [labels['in-progress']] }),
+        fakeIssue({ number: 12 }),
+      ]),
+      request: manual,
+    });
+
+    expect(result.outcome).toBe('needs-human');
+    expect(result.reasonCode).toBe('unexpected-active-issue');
+    expect(provider.startRequests).toHaveLength(0);
+  });
+
+  it('continues a merged-PR run from the frozen plan order', async () => {
+    const { result, api, provider } = await run({
+      config: epicConfig(
+        [closedDone(11, [labels.done]), fakeIssue({ number: 12 })],
+        { comments: { 1: [seededPlan(1, [11, 12])] } },
+      ),
+      request: mergedPrRequest(20, [11]),
+    });
+
+    expect(result.outcome).toBe('started');
+    expect(result.issueNumber).toBe(12);
+    expect(provider.startRequests[0].issue.number).toBe(12);
+    // A continuation run never rewrites the frozen plan.
+    expect(api.createdComments.filter((c) => c.issue === 1)).toHaveLength(0);
+  });
+
+  it('pauses with plan-drift when the native hierarchy no longer matches the plan', async () => {
+    const { result, provider } = await run({
+      config: epicConfig(
+        [closedDone(11, [labels.done]), fakeIssue({ number: 12 })],
+        {
+          comments: { 1: [seededPlan(1, [11, 12])] },
+          // The native sub-issue order drifted away from the frozen plan.
+          subIssues: { 1: [12, 11] },
+        },
+      ),
+      request: mergedPrRequest(20, [11]),
+    });
+
+    expect(result.outcome).toBe('needs-human');
+    expect(result.reasonCode).toBe('plan-drift');
+    expect(provider.startRequests).toHaveLength(0);
   });
 });
 
@@ -398,9 +532,10 @@ describe('runFeatureLoop — assignment outcomes', () => {
 describe('runFeatureLoop — idempotency and reconciliation', () => {
   it('does not re-assign on a duplicate manual dispatch', async () => {
     const { result, provider } = await run({
-      config: epicConfig([
-        fakeIssue({ number: 11, labelNames: [labels['in-progress']] }),
-      ]),
+      config: epicConfig(
+        [fakeIssue({ number: 11, labelNames: [labels['in-progress']] })],
+        { comments: { 1: [seededPlan(1, [11])] } },
+      ),
       provider: { alreadyStarted: true },
       request: manual,
     });
@@ -446,7 +581,10 @@ describe('runFeatureLoop — idempotency and reconciliation', () => {
       config: epicConfig(
         [fakeIssue({ number: 11, labelNames: [labels['in-progress']] })],
         {
-          comments: { 11: [{ id: 99, body: seeded.body }] },
+          comments: {
+            1: [seededPlan(1, [11])],
+            11: [{ id: 99, body: seeded.body }],
+          },
         },
       ),
       provider: { alreadyStarted: true },
@@ -459,9 +597,10 @@ describe('runFeatureLoop — idempotency and reconciliation', () => {
 
   it('reports a running issue whose agent is no longer assigned', async () => {
     const { result, provider } = await run({
-      config: epicConfig([
-        fakeIssue({ number: 11, labelNames: [labels['in-progress']] }),
-      ]),
+      config: epicConfig(
+        [fakeIssue({ number: 11, labelNames: [labels['in-progress']] })],
+        { comments: { 1: [seededPlan(1, [11])] } },
+      ),
       provider: { alreadyStarted: false },
       request: manual,
     });

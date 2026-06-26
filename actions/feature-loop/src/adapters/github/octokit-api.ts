@@ -64,6 +64,14 @@ interface ParentQuery {
   } | null;
 }
 
+interface IssueNodeIdQuery {
+  readonly repository: {
+    readonly issue: {
+      readonly id: string;
+    } | null;
+  } | null;
+}
+
 interface ClosingReferencesQuery {
   readonly repository: {
     readonly pullRequest: {
@@ -348,6 +356,59 @@ export class OctokitGitHubApi implements GitHubApi {
       { owner: this.owner, repo: this.repo, number: issueNumber },
     );
     return result.repository?.issue?.parent?.number ?? null;
+  }
+
+  async getIssueNodeId(issueNumber: number): Promise<string | null> {
+    const result = await this.octokit.graphql<IssueNodeIdQuery>(
+      `query($owner:String!,$repo:String!,$number:Int!){
+        repository(owner:$owner,name:$repo){
+          issue(number:$number){ id }
+        }
+      }`,
+      { owner: this.owner, repo: this.repo, number: issueNumber },
+    );
+    return result.repository?.issue?.id ?? null;
+  }
+
+  async addSubIssue(
+    parentId: string,
+    subIssueId: string,
+    replaceParent: boolean,
+  ): Promise<void> {
+    await this.octokit.graphql(
+      `mutation($issueId:ID!,$subIssueId:ID!,$replaceParent:Boolean){
+        addSubIssue(input:{issueId:$issueId,subIssueId:$subIssueId,replaceParent:$replaceParent}){
+          clientMutationId
+        }
+      }`,
+      { issueId: parentId, subIssueId, replaceParent },
+    );
+  }
+
+  async removeSubIssue(parentId: string, subIssueId: string): Promise<void> {
+    await this.octokit.graphql(
+      `mutation($issueId:ID!,$subIssueId:ID!){
+        removeSubIssue(input:{issueId:$issueId,subIssueId:$subIssueId}){
+          clientMutationId
+        }
+      }`,
+      { issueId: parentId, subIssueId },
+    );
+  }
+
+  async reprioritizeSubIssue(
+    parentId: string,
+    subIssueId: string,
+    afterId: string | null,
+  ): Promise<void> {
+    await this.octokit.graphql(
+      `mutation($issueId:ID!,$subIssueId:ID!,$afterId:ID){
+        reprioritizeSubIssue(input:{issueId:$issueId,subIssueId:$subIssueId,afterId:$afterId}){
+          clientMutationId
+        }
+      }`,
+      { issueId: parentId, subIssueId, afterId },
+    );
   }
 
   async getPullRequest(pullNumber: number): Promise<ApiPullRequest | null> {

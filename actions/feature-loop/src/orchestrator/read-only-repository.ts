@@ -28,6 +28,9 @@ export function readOnlyRepository(
       repository.getEpicWithSubIssues(epicNumber, numbers),
     getNativeSubIssueNumbers: (epicNumber) =>
       repository.getNativeSubIssueNumbers(epicNumber),
+    getIssueIdentity: (issueNumber) => repository.getIssueIdentity(issueNumber),
+    getInitializationPlan: (epicNumber) =>
+      repository.getInitializationPlan(epicNumber),
     getParentEpicNumber: (issueNumber) =>
       repository.getParentEpicNumber(issueNumber),
     getMarkdownSubIssueNumbers: (epicNumber, heading) =>
@@ -53,5 +56,9 @@ export function readOnlyRepository(
     updatePullRequestBody: async () => undefined,
     createLabel: async () => undefined,
     upsertStatusComment: async () => undefined,
+    addSubIssue: async () => undefined,
+    removeSubIssue: async () => undefined,
+    reprioritizeSubIssue: async () => undefined,
+    upsertInitializationPlan: async () => undefined,
   };
 }
