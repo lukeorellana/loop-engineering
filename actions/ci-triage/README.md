@@ -5,15 +5,19 @@ Copilot Agent Tasks API, opening or reusing a fix pull request. The action keeps
 a human in the loop: a person reviews and merges every fix pull request.
 
 > **Status:** This is the initial package. It defines the stable public
-> contract — every v1 input, output, outcome, and reason code — and validates
-> inputs end to end. Workflow-run and pull-request resolution, prompt
-> generation, and Agent Tasks calls are intentionally **not implemented yet**.
-> With valid inputs the action reports the `operational-error` outcome with the
-> `orchestration-not-implemented` reason code; a dry run reports a successful
+> contract — every v1 input, output, outcome, and reason code — validates
+> inputs end to end, and resolves the failed run's delivery target. Prompt
+> generation and Agent Tasks calls are intentionally **not implemented yet**, so
+> the resolver is not yet wired into the entry point: with valid inputs the
+> action still reports the `operational-error` outcome with the
+> `orchestration-not-implemented` reason code, and a dry run reports a successful
 > `dry-run` preview without performing any Agent Tasks writes. The reusable
-> contract lives under `src/domain/` (outcomes, pull-request modes, and reason
-> codes) and is re-exported from `src/contracts.ts`; the input/output mapping and
-> composition root live under `src/action/`, and the entry point is `src/main.ts`.
+> contract lives under `src/domain/` (outcomes, pull-request modes, reason codes,
+> and the pure target-resolution decisions) and is re-exported from
+> `src/contracts.ts`; the failed-run and pull-request target resolver
+> (`resolveTriageTarget`) lives under `src/adapters/github/` over a narrow,
+> mockable GitHub API boundary; the input/output mapping and composition root
+> live under `src/action/`, and the entry point is `src/main.ts`.
 
 The action is packaged with the same Node 20 TypeScript model as
 [`feature-loop`](../feature-loop): TypeScript sources under `src/`, bundled with
@@ -61,9 +65,17 @@ as empty strings.
 ### Reason codes
 
 The stable reason-code vocabulary is defined in
-[`src/domain/contract.ts`](src/domain/contract.ts). Only a subset is emitted by
-this version (`invalid-input`, `orchestration-not-implemented`,
-`dry-run-preview`); the remainder reserve stable codes for later versions.
+[`src/domain/contract.ts`](src/domain/contract.ts). The action entry point still
+emits only `invalid-input`, `orchestration-not-implemented`, and
+`dry-run-preview`; the target resolver
+([`src/adapters/github/resolve-target.ts`](src/adapters/github/resolve-target.ts))
+additionally produces the failed-run and pull-request codes
+(`not-a-workflow-run-event`, `workflow-run-not-completed`,
+`workflow-run-not-failed`, `unsupported-triggering-event`,
+`pull-request-not-found`, `pull-request-ambiguous`, `pull-request-closed`,
+`fork-pull-request`, `existing-mode-requires-pull-request`,
+`target-branch-not-found`, and `stale-workflow-run`). The remaining codes reserve
+stable vocabulary for later versions.
 
 ## Development
 

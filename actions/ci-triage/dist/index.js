@@ -27546,10 +27546,33 @@ const PULL_REQUEST_MODES = ['auto', 'existing', 'new'];
  *   (ignored).
  * - `ambiguous-pull-request`: more than one candidate fix pull request matched
  *   (needs-human).
- * - `pull-request-not-found`: `existing` mode found no fix pull request to reuse
- *   (needs-human).
+ * - `pull-request-not-found`: no fix pull request could be resolved for the
+ *   failed run (needs-human).
  * - `agent-tasks-unavailable`: the Agent Tasks API could not be reached or
  *   rejected the request (operational-error).
+ *
+ * Target-resolution reason codes (the failed-run and delivery-target resolver):
+ *
+ * - `not-a-workflow-run-event`: the trigger was not a `workflow_run` event, so
+ *   there is nothing to triage (ignored).
+ * - `workflow-run-not-completed`: the failed run could not be confirmed to have
+ *   completed (ignored).
+ * - `workflow-run-not-failed`: the run completed with a non-`failure`
+ *   conclusion, so no triage is warranted (ignored).
+ * - `unsupported-triggering-event`: the failed run was triggered by an event
+ *   other than `pull_request` or `push` (ignored).
+ * - `pull-request-ambiguous`: more than one open same-repository pull request
+ *   matched the failed run's head branch or SHA (needs-human).
+ * - `pull-request-closed`: the only matching pull request is closed, so it
+ *   cannot receive a fix (needs-human).
+ * - `fork-pull-request`: the matching pull request originates from a fork; triage
+ *   never targets fork-owned branches (needs-human).
+ * - `existing-mode-requires-pull-request`: `existing` mode was requested for a
+ *   push-triggered run that has no pull request to reuse (needs-human).
+ * - `target-branch-not-found`: the branch the fix would target no longer exists
+ *   (or the run targeted a tag), so there is nothing to write to (needs-human).
+ * - `stale-workflow-run`: the pull request or branch advanced past the failed
+ *   run's head SHA, so the failure is no longer current (ignored).
  */
 const TRIAGE_REASON_CODES = (/* unused pure expression or super */ null && ([
     'invalid-input',
@@ -27562,6 +27585,16 @@ const TRIAGE_REASON_CODES = (/* unused pure expression or super */ null && ([
     'ambiguous-pull-request',
     'pull-request-not-found',
     'agent-tasks-unavailable',
+    'not-a-workflow-run-event',
+    'workflow-run-not-completed',
+    'workflow-run-not-failed',
+    'unsupported-triggering-event',
+    'pull-request-ambiguous',
+    'pull-request-closed',
+    'fork-pull-request',
+    'existing-mode-requires-pull-request',
+    'target-branch-not-found',
+    'stale-workflow-run',
 ]));
 
 ;// CONCATENATED MODULE: ./src/action/inputs.ts
