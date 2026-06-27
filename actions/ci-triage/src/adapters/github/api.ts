@@ -59,3 +59,53 @@ export interface TriageGitHubApi {
   /** The head SHA a branch currently points to, or `null` when it is missing. */
   getBranchHeadSha(branch: string): Promise<string | null>;
 }
+
+/**
+ * A bounded recent commit, redacted to only diagnosis-useful fields. The commit
+ * author's email address is deliberately never carried across this boundary.
+ */
+export interface TriageCommit {
+  /** The full commit SHA; the prompt renders only the short form. */
+  readonly sha: string;
+  /** The commit author's display name (never the email). */
+  readonly authorName: string;
+  /** The commit date (ISO 8601), or an empty string when unknown. */
+  readonly date: string;
+  /** The commit subject (first line of the message). */
+  readonly subject: string;
+}
+
+/**
+ * A legacy Copilot-created pull request, discovered only by head-branch naming
+ * convention. It is a fallback for attempts created before CI Triage fingerprints
+ * existed and is never treated as authoritative for deduplicating a new task.
+ */
+export interface LegacyCopilotPullRequest {
+  readonly number: number;
+  readonly state: string;
+  readonly url: string;
+  readonly headRef: string;
+}
+
+/**
+ * The optional, best-effort history reads used only to enrich the prompt with
+ * bounded previous-attempt context. They are separated from {@link
+ * TriageGitHubApi} because they are never required to resolve a delivery target;
+ * a failure here is recorded safely and never blocks a new task.
+ */
+export interface TriageHistoryGitHubApi {
+  /**
+   * Recent commits ending at the resolved target ref or SHA, most recent first,
+   * bounded by `limit`. Author emails are never returned.
+   */
+  listRecentCommits(
+    refOrSha: string,
+    limit: number,
+  ): Promise<readonly TriageCommit[]>;
+
+  /**
+   * Open pull requests whose head branch follows the legacy `copilot/` naming
+   * convention, used only as a fallback when no fingerprinted prior task exists.
+   */
+  listLegacyCopilotPullRequests(): Promise<readonly LegacyCopilotPullRequest[]>;
+}

@@ -34,7 +34,7 @@ The action is packaged with the same Node 20 TypeScript model as
 | `pull-request-mode`   | no       | `auto`                | Fix pull-request resolution: `auto`, `existing`, or `new`. Any other value is a configuration error. |
 | `prompt-instructions` | no       | _empty_               | Trusted repository-owner instructions appended to the triage prompt.                                 |
 | `additional-context`  | no       | _empty_               | Bounded operational evidence. Treated as untrusted data, never as instructions.                      |
-| `include-history`     | no       | `true`                | Include prior attempts and related history when building the prompt. Strict boolean.                 |
+| `include-history`     | no       | `true`                | Collect bounded, redacted previous-attempt history (best effort) for the prompt. Strict boolean.     |
 | `dry-run`             | no       | `false`               | Evaluate and report without any Agent Tasks writes or pull-request mutations. Strict boolean.        |
 
 Boolean inputs accept only `true` or `false` (case-insensitive); any other value
@@ -84,6 +84,71 @@ credential, permission, plan, and request-validation failures fail closed as
 `configuration-error`; rate-limit, transient, and malformed-response failures are
 `operational-error`.
 
+The idempotency, reconciliation, and history codes
+(`agent-task-already-exists`, `agent-task-create-reconciled`,
+`agent-task-reconciliation-failed`, and `agent-task-history-unavailable`) are
+described under [Idempotency, reconciliation, and history](#idempotency-reconciliation-and-history).
+
+## Idempotency, reconciliation, and history
+
+CI Triage deduplicates work per failed run **attempt** on a best-effort basis.
+Every generated prompt carries a hidden, machine-readable fingerprint marker
+(`<!-- ci-triage-fingerprint: ... -->`) derived only from non-secret identity
+metadata — the CI Triage prompt/version marker, the repository, the workflow run
+id, the run attempt, and the resolved target head ref. The same run attempt
+always yields the same fingerprint; a **new** run attempt yields a different one.
+
+> **Best effort only.** The public-preview Agent Tasks API exposes no atomic
+> idempotency key, so deduplication cannot be guaranteed across truly concurrent
+> callers. CI Triage minimizes duplicates by searching recent Agent Tasks for the
+> fingerprint before creating, and by reconciling uncertain create results.
+
+- **Deduplication.** Before creating a task (outside of a dry run), the action
+  lists recent Agent Tasks with `agent-token`, retrieves candidate task details
+  as needed, and matches the exact fingerprint marker. A match returns
+  `duplicate` / `agent-task-already-exists` with the existing task id and URL and
+  starts no new task. If the deduplication search itself cannot be performed
+  reliably, the action fails closed rather than risk a duplicate.
+- **Reconciliation.** After an uncertain create result (a network timeout or an
+  undecodable response), the action searches again for the fingerprint. When the
+  task is found it returns `agent-task-create-reconciled`; only when no task can
+  be confirmed does it report `agent-task-reconciliation-failed`
+  (`operational-error`).
+- **No attempt cap.** v1 deliberately implements no automatic
+  maximum-remediation-attempt cap or circuit breaker. Each new **failed workflow
+  run attempt** may legitimately start another task, while reprocessing the
+  **same exact** run attempt reconciles to the one task.
+- **Recommended concurrency.** Because deduplication is best effort, consumers
+  should serialize duplicate workflow executions with a workflow `concurrency`
+  group keyed by repository, run id, and run attempt so duplicate executions
+  queue rather than race, for example:
+
+  ```yaml
+  concurrency:
+    group: ci-triage-${{ github.repository }}-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}
+    cancel-in-progress: false
+  ```
+
+### Previous-attempt history
+
+When `include-history` is `true`, the action collects bounded, redacted
+previous-attempt context and feeds it into the prompt with explicit instructions
+to review previous attempts before changing code, not to repeat a failed change
+unchanged, and to explain why a new approach is materially different when earlier
+fixes did not work. The collected context is strictly bounded and redacted:
+
+- Recent commits ending at the resolved target (short SHA, author **name**, date,
+  and subject). Commit-author **email addresses are never included**.
+- Recent matching CI Triage tasks and their state, URL, a **truncated** approach
+  summary (never the complete prior prompt), and any associated pull request.
+- Legacy `copilot/*` pull requests discovered by branch convention are used
+  **only as a fallback** for attempts that predate CI Triage fingerprints; they
+  are never treated as authoritative for deduplicating a new task.
+
+History collection is best effort: a source that cannot be retrieved is recorded
+safely (`agent-task-history-unavailable`) and never blocks a new task. Failures
+never leak credentials or dump API payloads.
+
 ## Agent Tasks provider
 
 The Copilot Agent Tasks provider lives under
@@ -123,7 +188,9 @@ fetching job or full logs only when needed), and includes the resolved
 PR/branch delivery target so the agent knows where it is working. It carries a
 hidden, machine-readable fingerprint
 (`<!-- ci-triage-fingerprint: ... -->`) derived only from non-secret identity
-metadata, for later reconciliation.
+metadata (the prompt/version marker, repository, run id, run attempt, and target
+head ref), for the best-effort deduplication and reconciliation described under
+[Idempotency, reconciliation, and history](#idempotency-reconciliation-and-history).
 
 ### Trust boundary
 

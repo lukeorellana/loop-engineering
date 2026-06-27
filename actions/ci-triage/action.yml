@@ -46,8 +46,11 @@ inputs:
     default: ''
   include-history:
     description: >-
-      When true, include prior attempts and related history when building the
-      triage prompt.
+      When true, collect bounded, redacted previous-attempt history (recent
+      commits, recent matching Agent Tasks and their state/PR, and legacy
+      copilot/* pull requests only as a fallback) and feed it into the triage
+      prompt. Commit-author emails and complete prior prompts are never included.
+      History collection is best effort and never blocks a new task.
     required: false
     default: 'true'
   dry-run:
@@ -62,7 +65,10 @@ outputs:
       The coarse-grained result: started, duplicate, ignored, needs-human,
       dry-run, configuration-error, or operational-error.
   reason:
-    description: 'A stable, machine-readable reason code for the outcome.'
+    description: >-
+      A stable, machine-readable reason code for the outcome, including the
+      idempotency and reconciliation codes agent-task-already-exists,
+      agent-task-create-reconciled, and agent-task-reconciliation-failed.
   task-id:
     description: 'The Agent Tasks task identifier, when a task was started or reused.'
   task-url:

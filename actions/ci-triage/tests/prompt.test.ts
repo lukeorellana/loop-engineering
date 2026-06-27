@@ -277,3 +277,71 @@ describe('summarizeTriagePrompt', () => {
     expect(summary.length).toBe(prompt.text.length);
   });
 });
+
+import { extractTaskFingerprint } from '../src/domain/index.js';
+
+describe('task fingerprint identity', () => {
+  it('is stable for the same run attempt and differs for a new attempt', () => {
+    const attempt2 = computeTaskFingerprint(baseContext());
+    const sameAttempt = computeTaskFingerprint(baseContext());
+    expect(sameAttempt).toBe(attempt2);
+    const attempt3 = computeTaskFingerprint(
+      baseContext({
+        run: { ...baseContext().run, workflowRunAttempt: 3 },
+      }),
+    );
+    expect(attempt3).not.toBe(attempt2);
+  });
+
+  it('round-trips through the embedded marker', () => {
+    const prompt = buildTriagePrompt(baseContext());
+    expect(extractTaskFingerprint(prompt.text)).toBe(prompt.fingerprint);
+  });
+
+  it('returns null when no marker is present', () => {
+    expect(extractTaskFingerprint('no marker here')).toBeNull();
+  });
+});
+
+describe('enriched, redacted history rendering', () => {
+  it('renders commit author name and date but the prompt never carries an email', () => {
+    const { text } = buildTriagePrompt(
+      baseContext({
+        includeHistory: true,
+        recentCommits: [
+          {
+            sha: 'd'.repeat(40),
+            message: 'fix flake',
+            authorName: 'Octo Cat',
+            date: '2026-01-02',
+          },
+        ],
+      }),
+    );
+    expect(text).toContain('- ddddddd fix flake (Octo Cat, 2026-01-02)');
+    expect(text).not.toContain('@');
+  });
+
+  it('renders previous-task state, url, and PR but no full prior prompt', () => {
+    const { text } = buildTriagePrompt(
+      baseContext({
+        includeHistory: true,
+        previousTasks: [
+          {
+            taskId: 'task-7',
+            summary: 'bumped deps',
+            state: 'completed',
+            url: 'https://tasks/7',
+            pullRequest: { number: 4, state: 'closed', url: 'https://pr/4' },
+          },
+        ],
+      }),
+    );
+    expect(text).toContain(
+      'Review these previous attempts before changing any code',
+    );
+    expect(text).toContain(
+      '- task-7 (completed): bumped deps [task https://tasks/7; PR #4 (closed) https://pr/4]',
+    );
+  });
+});
