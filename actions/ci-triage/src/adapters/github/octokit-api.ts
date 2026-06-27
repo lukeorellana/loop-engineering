@@ -15,7 +15,13 @@
 import type { getOctokit } from '@actions/github';
 
 import type { CandidatePullRequest } from '../../domain/index.js';
-import type { TriageGitHubApi, TriageWorkflowRun } from './api.js';
+import type {
+  LegacyCopilotPullRequest,
+  TriageCommit,
+  TriageGitHubApi,
+  TriageHistoryGitHubApi,
+  TriageWorkflowRun,
+} from './api.js';
 
 /** The authenticated client surface this transport depends on. */
 export type OctokitClient = ReturnType<typeof getOctokit>;
@@ -67,7 +73,12 @@ function normalizePullRequest(pull: RestPullRequest): CandidatePullRequest {
   };
 }
 
-export class OctokitTriageGitHubApi implements TriageGitHubApi {
+/** The legacy head-branch prefix Copilot-created pull requests follow. */
+export const LEGACY_COPILOT_BRANCH_PREFIX = 'copilot/';
+
+export class OctokitTriageGitHubApi
+  implements TriageGitHubApi, TriageHistoryGitHubApi
+{
   private readonly octokit: OctokitClient;
   private readonly owner: string;
   private readonly repo: string;
@@ -155,5 +166,68 @@ export class OctokitTriageGitHubApi implements TriageGitHubApi {
       }
       throw error;
     }
+  }
+
+  async listRecentCommits(
+    refOrSha: string,
+    limit: number,
+  ): Promise<readonly TriageCommit[]> {
+    const { data } = await this.octokit.rest.repos.listCommits({
+      owner: this.owner,
+      repo: this.repo,
+      sha: refOrSha,
+      per_page: Math.max(1, Math.min(limit, 100)),
+    });
+    return data.slice(0, limit).map((entry: unknown) => {
+      const commit = entry as {
+        readonly sha: string;
+        readonly commit: {
+          readonly message: string;
+          readonly author: {
+            readonly name?: string;
+            readonly date?: string;
+          } | null;
+        };
+        readonly author: { readonly login?: string } | null;
+      };
+      const subject = (commit.commit.message ?? '').split('\n', 1)[0] ?? '';
+      // Prefer the GitHub account login when available; otherwise the commit
+      // author display name. The author email is intentionally never read.
+      const authorName =
+        commit.author?.login ?? commit.commit.author?.name ?? '';
+      return {
+        sha: commit.sha,
+        authorName,
+        date: commit.commit.author?.date ?? '',
+        subject,
+      };
+    });
+  }
+
+  async listLegacyCopilotPullRequests(): Promise<
+    readonly LegacyCopilotPullRequest[]
+  > {
+    const { data } = await this.octokit.rest.pulls.list({
+      owner: this.owner,
+      repo: this.repo,
+      state: 'open',
+      per_page: 100,
+    });
+    return data
+      .map((pull: unknown) => {
+        const pr = pull as {
+          readonly number: number;
+          readonly state: string;
+          readonly html_url: string;
+          readonly head: { readonly ref: string };
+        };
+        return {
+          number: pr.number,
+          state: pr.state,
+          url: pr.html_url,
+          headRef: pr.head.ref,
+        };
+      })
+      .filter((pr) => pr.headRef.startsWith(LEGACY_COPILOT_BRANCH_PREFIX));
   }
 }

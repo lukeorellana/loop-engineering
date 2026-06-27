@@ -47,6 +47,8 @@ export async function run(): Promise<void> {
     event: resolveEvent(),
     buildTriageApi: (token) =>
       new OctokitTriageGitHubApi({ octokit: getOctokit(token), owner, repo }),
+    buildHistoryApi: (token) =>
+      new OctokitTriageGitHubApi({ octokit: getOctokit(token), owner, repo }),
     buildAgentTasksProvider: (token) =>
       new GitHubAgentTasksProvider({
         transport: new OctokitAgentTasksTransport({

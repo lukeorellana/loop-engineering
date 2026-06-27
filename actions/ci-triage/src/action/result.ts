@@ -53,6 +53,8 @@ export interface TriageResult {
   readonly modelOverrideProvided?: boolean;
   /** Whether optional history was included when building the prompt. */
   readonly historyIncluded?: boolean;
+  /** Whether some optional previous-attempt history could not be retrieved. */
+  readonly historyUnavailable?: boolean;
   /** Whether optional additional context was included when building the prompt. */
   readonly additionalContextIncluded?: boolean;
   /** Whether any prompt section was truncated to fit its size limit. */

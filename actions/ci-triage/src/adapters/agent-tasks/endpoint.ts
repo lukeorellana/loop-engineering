@@ -16,10 +16,30 @@ export const AGENT_TASKS_API_VERSION = '2022-11-28';
 /** The HTTP method used to start an Agent Tasks task. */
 export const AGENT_TASKS_CREATE_METHOD = 'POST';
 
+/** The HTTP method used to list or read Agent Tasks. */
+export const AGENT_TASKS_READ_METHOD = 'GET';
+
 /**
  * Build the create-task path for a repository. Centralized so the preview path
  * is defined exactly once.
  */
 export function agentTasksCreatePath(owner: string, repo: string): string {
   return `/repos/${owner}/${repo}/copilot/agents`;
+}
+
+/**
+ * Build the list-tasks path for a repository. Shares the create path; the HTTP
+ * method selects the operation.
+ */
+export function agentTasksListPath(owner: string, repo: string): string {
+  return `/repos/${owner}/${repo}/copilot/agents`;
+}
+
+/** Build the single-task read path for a repository. */
+export function agentTasksReadPath(
+  owner: string,
+  repo: string,
+  taskId: string,
+): string {
+  return `/repos/${owner}/${repo}/copilot/agents/${encodeURIComponent(taskId)}`;
 }

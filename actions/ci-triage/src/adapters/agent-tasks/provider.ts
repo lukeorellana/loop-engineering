@@ -20,7 +20,11 @@
  */
 
 import {
+  mapTaskList,
+  mapTaskListItem,
   mapTaskResource,
+  type AgentTaskListItem,
+  type AgentTaskPullRequestRef,
   type AgentTaskRequestBody,
   type AgentTasksTransport,
 } from './api.js';
@@ -54,6 +58,24 @@ export interface StartedTask {
   readonly taskUrl: string;
 }
 
+/**
+ * An existing Agent Task discovered by fingerprint or listed as prior history.
+ * It carries only bounded, diagnosis-useful fields — never the full prior
+ * prompt.
+ */
+export interface ExistingTask {
+  readonly taskId: string;
+  readonly taskUrl: string;
+  /** The task lifecycle state, when reported. */
+  readonly state?: string;
+  /** A short, truncated approach summary, when known. */
+  readonly summary?: string;
+  /** The CI Triage fingerprint parsed from the task, when present. */
+  readonly fingerprint?: string;
+  /** The associated pull request, when the API exposes one. */
+  readonly pullRequest?: AgentTaskPullRequestRef;
+}
+
 /** The result of attempting to start a task. */
 export type StartTaskResult =
   | { readonly ok: true; readonly task: StartedTask }
@@ -65,10 +87,42 @@ export type StartTaskResult =
     };
 
 /**
+ * The result of searching recent Agent Tasks for an exact fingerprint match.
+ *
+ * `ok: true` with `task: null` means the search ran but found no match (a new
+ * task may be started). `ok: false` means the search itself could not be
+ * performed reliably, so deduplication cannot be guaranteed and the caller must
+ * fail closed rather than risk a duplicate.
+ */
+export type FindTaskResult =
+  | { readonly ok: true; readonly task: ExistingTask | null }
+  | {
+      readonly ok: false;
+      readonly reason: AgentTasksFailureReason;
+      readonly message: string;
+    };
+
+/** The result of listing recent Agent Tasks for bounded history. */
+export type RecentTasksResult =
+  | { readonly ok: true; readonly tasks: readonly ExistingTask[] }
+  | {
+      readonly ok: false;
+      readonly reason: AgentTasksFailureReason;
+      readonly message: string;
+    };
+
+/**
  * The clean provider port the triage orchestration depends on.
  */
 export interface AgentTasksProvider {
   startTask(input: StartTaskInput): Promise<StartTaskResult>;
+  /**
+   * Best-effort search of recent Agent Tasks for a task whose embedded
+   * fingerprint marker matches `fingerprint`.
+   */
+  findTaskByFingerprint(fingerprint: string): Promise<FindTaskResult>;
+  /** List recent Agent Tasks, reduced to bounded fields, for history. */
+  listRecentTasks(): Promise<RecentTasksResult>;
 }
 
 /**
@@ -109,6 +163,27 @@ export interface GitHubAgentTasksProviderOptions {
 }
 
 /**
+ * The maximum number of fingerprint-less candidates whose details are fetched
+ * while searching for a fingerprint match. Bounds the extra reads a single
+ * deduplication lookup may perform.
+ */
+export const FINGERPRINT_DETAIL_LOOKUP_CAP = 5;
+
+/** The maximum number of previous attempts surfaced as bounded history. */
+export const RECENT_TASKS_HISTORY_CAP = 10;
+
+function toExistingTask(item: AgentTaskListItem): ExistingTask {
+  return {
+    taskId: item.id,
+    taskUrl: item.htmlUrl,
+    ...(item.state !== null ? { state: item.state } : {}),
+    ...(item.summary !== null ? { summary: item.summary } : {}),
+    ...(item.fingerprint !== null ? { fingerprint: item.fingerprint } : {}),
+    ...(item.pullRequest !== null ? { pullRequest: item.pullRequest } : {}),
+  };
+}
+
+/**
  * The default {@link AgentTasksProvider}, built over a {@link AgentTasksTransport}.
  */
 export class GitHubAgentTasksProvider implements AgentTasksProvider {
@@ -145,6 +220,65 @@ export class GitHubAgentTasksProvider implements AgentTasksProvider {
     return {
       ok: true,
       task: { taskId: resource.id, taskUrl: resource.htmlUrl },
+    };
+  }
+
+  async findTaskByFingerprint(fingerprint: string): Promise<FindTaskResult> {
+    let items: readonly AgentTaskListItem[];
+    try {
+      items = mapTaskList(await this.transport.listTasks());
+    } catch (error) {
+      const sanitized = sanitizeAgentTasksError(error);
+      return {
+        ok: false,
+        reason: sanitized.reason,
+        message: sanitized.message,
+      };
+    }
+
+    const direct = items.find((item) => item.fingerprint === fingerprint);
+    if (direct !== undefined) {
+      return { ok: true, task: toExistingTask(direct) };
+    }
+
+    // Some list items may omit the prompt body that carries the marker. Resolve
+    // a bounded number of those candidates' details to confirm or rule them out.
+    const pending = items
+      .filter((item) => item.fingerprint === null)
+      .slice(0, FINGERPRINT_DETAIL_LOOKUP_CAP);
+    for (const candidate of pending) {
+      let detail: unknown;
+      try {
+        detail = await this.transport.getTask(candidate.id);
+      } catch {
+        // A single detail read failing does not invalidate the list-based
+        // search; skip this candidate and keep looking.
+        continue;
+      }
+      const resolved = mapTaskListItem(detail);
+      if (resolved !== null && resolved.fingerprint === fingerprint) {
+        return { ok: true, task: toExistingTask(resolved) };
+      }
+    }
+
+    return { ok: true, task: null };
+  }
+
+  async listRecentTasks(): Promise<RecentTasksResult> {
+    let items: readonly AgentTaskListItem[];
+    try {
+      items = mapTaskList(await this.transport.listTasks());
+    } catch (error) {
+      const sanitized = sanitizeAgentTasksError(error);
+      return {
+        ok: false,
+        reason: sanitized.reason,
+        message: sanitized.message,
+      };
+    }
+    return {
+      ok: true,
+      tasks: items.slice(0, RECENT_TASKS_HISTORY_CAP).map(toExistingTask),
     };
   }
 }

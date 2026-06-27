@@ -25,16 +25,22 @@ import type {
   AgentTasksProvider,
   StartTaskInput,
 } from '../adapters/agent-tasks/index.js';
-import type { TriageGitHubApi, TriageEvent } from '../adapters/github/index.js';
+import type {
+  TriageGitHubApi,
+  TriageHistoryGitHubApi,
+  TriageEvent,
+} from '../adapters/github/index.js';
 import { resolveTriageTarget } from '../adapters/github/index.js';
 import type {
   FailedRunMetadata,
   PromptDeliveryTarget,
   TargetResolution,
   TriageOutcome,
+  TriagePromptContext,
 } from '../domain/index.js';
-import { buildTriagePrompt } from '../domain/index.js';
+import { buildTriagePrompt, computeTaskFingerprint } from '../domain/index.js';
 import type { ActionCore } from './core.js';
+import { collectTriageHistory, type TriageHistory } from './history.js';
 import type { ActionInputs } from './inputs.js';
 import { readActionInputs } from './inputs.js';
 import { setActionOutputs } from './outputs.js';
@@ -54,6 +60,11 @@ export interface ActionEnvironment {
   readonly event: TriageEvent;
   /** Build the read-only GitHub API from the repository token. */
   readonly buildTriageApi: (token: string) => TriageGitHubApi;
+  /**
+   * Build the optional best-effort history reads from the repository token. When
+   * omitted, commit and legacy-pull-request history is simply unavailable.
+   */
+  readonly buildHistoryApi?: (token: string) => TriageHistoryGitHubApi;
   /** Build the Agent Tasks provider from the dedicated agent token. */
   readonly buildAgentTasksProvider: (token: string) => AgentTasksProvider;
 }
@@ -157,6 +168,37 @@ function startTaskInput(
 }
 
 /**
+ * Whether a create failure is *uncertain*, meaning the task may or may not have
+ * been created (a network timeout or an undecodable response). These are the
+ * outcomes a follow-up fingerprint search reconciles; a definitive rejection
+ * (auth, forbidden, invalid request, rate limit) is not reconciled.
+ */
+function isUncertainCreateFailure(reason: AgentTasksFailureReason): boolean {
+  return reason === 'agent-transient' || reason === 'agent-unexpected-response';
+}
+
+/** Safe, sourceless detail lines describing the collected history, if any. */
+function historyDetails(history?: TriageHistory): string[] {
+  if (history === undefined) {
+    return [];
+  }
+  const lines: string[] = [];
+  if (history.recentCommits.length > 0 || history.previousTasks.length > 0) {
+    lines.push(
+      `Included bounded previous-attempt history (${history.recentCommits.length} commit(s), ${history.previousTasks.length} prior attempt(s)).`,
+    );
+  }
+  if (history.unavailable.length > 0) {
+    lines.push(
+      `Some optional history was unavailable (${history.unavailable.join(
+        ', ',
+      )}); this did not block triage [agent-task-history-unavailable].`,
+    );
+  }
+  return lines;
+}
+
+/**
  * Resolve, preview, or start a triage task. Returns a complete triage result;
  * the caller publishes outputs, writes the summary, and sets the exit status.
  */
@@ -191,9 +233,10 @@ async function orchestrate(
     };
   }
 
-  // A delivery target was resolved. Build the hardened prompt once; it is reused
-  // for the dry-run preview and the real start so both report identical metadata.
-  const prompt = buildTriagePrompt({
+  // A delivery target was resolved. The fingerprint is a pure function of the
+  // run identity and target, independent of any optional history or evidence, so
+  // it is stable for the same run attempt and changes for a new attempt.
+  const baseContext: TriagePromptContext = {
     repository: env.repository,
     conclusion: 'failure',
     run: resolution.metadata,
@@ -205,23 +248,20 @@ async function orchestrate(
       ? { additionalContext: inputs.additionalContext }
       : {}),
     includeHistory: inputs.includeHistory,
-  });
-  const truncated = prompt.truncatedSections.length > 0;
-
-  const resolvedFields: Partial<TriageResult> = {
-    ...metadataFields(resolution.metadata),
-    ...targetFields(resolution),
-    ...promptFlags(inputs, truncated),
   };
+  const fingerprint = computeTaskFingerprint(baseContext);
 
   if (inputs.dryRun) {
     // Strict dry run: the only reads were the target resolution above. No task is
-    // listed or created; no branch, PR, comment, or label is mutated.
+    // listed or created and no history is collected; nothing is mutated.
+    const prompt = buildTriagePrompt(baseContext);
     return {
       outcome: 'dry-run',
       reasonCode: 'dry-run-preview',
       dryRun: true,
-      ...resolvedFields,
+      ...metadataFields(resolution.metadata),
+      ...targetFields(resolution),
+      ...promptFlags(inputs, prompt.truncatedSections.length > 0),
       details: [
         `Dry run: would start a triage task targeting ${resolution.targetBaseRef} (${resolution.resolvedMode} mode). No Agent Tasks writes were performed.`,
       ],
@@ -229,6 +269,78 @@ async function orchestrate(
   }
 
   const provider = env.buildAgentTasksProvider(inputs.agentToken);
+
+  const dedupFields: Partial<TriageResult> = {
+    ...metadataFields(resolution.metadata),
+    ...targetFields(resolution),
+    ...promptFlags(inputs, false),
+  };
+
+  // Best-effort idempotency: the public-preview API exposes no atomic
+  // idempotency key, so reprocessing the same run attempt is deduplicated by
+  // matching the fingerprint marker against recent Agent Tasks before creating.
+  const existing = await provider.findTaskByFingerprint(fingerprint);
+  if (!existing.ok) {
+    // Deduplication itself could not be performed reliably; fail closed rather
+    // than risk creating a duplicate task for this run attempt.
+    return {
+      outcome: outcomeForAgentFailure(existing.reason),
+      reasonCode: existing.reason,
+      dryRun: false,
+      ...dedupFields,
+      details: [
+        `Could not verify whether a triage task already exists, so no new task was started: ${existing.message}`,
+      ],
+    };
+  }
+  if (existing.task !== null) {
+    return {
+      outcome: 'duplicate',
+      reasonCode: 'agent-task-already-exists',
+      dryRun: false,
+      taskId: existing.task.taskId,
+      taskUrl: existing.task.taskUrl,
+      ...dedupFields,
+      details: [
+        'A triage task already exists for this exact failed run attempt; no new task was started.',
+      ],
+    };
+  }
+
+  // Best-effort previous-attempt history, only when enabled. A failure to gather
+  // optional history never blocks a new task.
+  let history: TriageHistory | undefined;
+  if (inputs.includeHistory) {
+    history = await collectTriageHistory({
+      provider,
+      ...(env.buildHistoryApi !== undefined
+        ? { historyApi: env.buildHistoryApi(inputs.githubToken) }
+        : {}),
+      currentFingerprint: fingerprint,
+      targetRef: resolution.metadata.headSha,
+    });
+  }
+
+  const prompt = buildTriagePrompt({
+    ...baseContext,
+    ...(history !== undefined && history.recentCommits.length > 0
+      ? { recentCommits: history.recentCommits }
+      : {}),
+    ...(history !== undefined && history.previousTasks.length > 0
+      ? { previousTasks: history.previousTasks }
+      : {}),
+  });
+
+  const resolvedFields: Partial<TriageResult> = {
+    ...metadataFields(resolution.metadata),
+    ...targetFields(resolution),
+    ...promptFlags(inputs, prompt.truncatedSections.length > 0),
+    ...(history !== undefined
+      ? { historyUnavailable: history.unavailable.length > 0 }
+      : {}),
+  };
+  const extraDetails = historyDetails(history);
+
   const started = await provider.startTask(
     startTaskInput(resolution, inputs, prompt.text),
   );
@@ -241,7 +353,37 @@ async function orchestrate(
       taskId: started.task.taskId,
       taskUrl: started.task.taskUrl,
       ...resolvedFields,
-      details: ['Started a Copilot Agent Tasks triage task.'],
+      details: ['Started a Copilot Agent Tasks triage task.', ...extraDetails],
+    };
+  }
+
+  // An uncertain create result (timeout or undecodable response) may have
+  // created the task anyway. Search again for the fingerprint to reconcile.
+  if (isUncertainCreateFailure(started.reason)) {
+    const reconciled = await provider.findTaskByFingerprint(fingerprint);
+    if (reconciled.ok && reconciled.task !== null) {
+      return {
+        outcome: 'started',
+        reasonCode: 'agent-task-create-reconciled',
+        dryRun: false,
+        taskId: reconciled.task.taskId,
+        taskUrl: reconciled.task.taskUrl,
+        ...resolvedFields,
+        details: [
+          'An uncertain create result was reconciled to an existing task by fingerprint.',
+          ...extraDetails,
+        ],
+      };
+    }
+    return {
+      outcome: 'operational-error',
+      reasonCode: 'agent-task-reconciliation-failed',
+      dryRun: false,
+      ...resolvedFields,
+      details: [
+        'An uncertain create result could not be reconciled to an existing task; a retry may be required.',
+        ...extraDetails,
+      ],
     };
   }
 
@@ -250,7 +392,7 @@ async function orchestrate(
     reasonCode: started.reason,
     dryRun: false,
     ...resolvedFields,
-    details: [started.message],
+    details: [started.message, ...extraDetails],
   };
 }
 

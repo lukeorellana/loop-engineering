@@ -10,6 +10,8 @@
  * {@link ./provider.ts}.
  */
 
+import { extractTaskFingerprint } from '../../domain/index.js';
+
 /**
  * The exact JSON request body sent to the Agent Tasks create endpoint.
  *
@@ -57,6 +59,177 @@ export interface AgentTasksTransport {
    * successful (2xx) response; throws on any HTTP or network failure.
    */
   createTask(body: AgentTaskRequestBody): Promise<unknown>;
+
+  /**
+   * List recent Agent Tasks for the repository. Returns the raw, unparsed
+   * response payload on a successful (2xx) response; throws on any HTTP or
+   * network failure. Used both for best-effort fingerprint deduplication and for
+   * collecting bounded previous-attempt history.
+   */
+  listTasks(): Promise<unknown>;
+
+  /**
+   * Retrieve a single candidate task's details (including the prompt body that
+   * carries the fingerprint marker), or `null` when it no longer exists. Only
+   * called when a list item lacks the data needed to match a fingerprint.
+   */
+  getTask(taskId: string): Promise<unknown>;
+}
+
+/**
+ * The maximum number of characters retained for a previous-attempt approach
+ * summary. The complete prior prompt is never carried across this boundary; only
+ * a short, bounded summary field is exposed.
+ */
+export const PREVIOUS_APPROACH_SUMMARY_MAX = 280;
+
+/** A pull request the Agent Tasks API associated with a previous attempt. */
+export interface AgentTaskPullRequestRef {
+  readonly number: number;
+  readonly state: string;
+  readonly url: string;
+}
+
+/**
+ * A reduced, bounded view of one Agent Task as returned by the list endpoint.
+ * It deliberately carries only diagnosis-useful fields and never the complete
+ * prior prompt: {@link AgentTaskListItem.fingerprint} is parsed from the hidden
+ * marker, and {@link AgentTaskListItem.summary} is a short, truncated approach
+ * summary only.
+ */
+export interface AgentTaskListItem {
+  readonly id: string;
+  readonly htmlUrl: string;
+  /** The task lifecycle state, when reported (for example `completed`). */
+  readonly state: string | null;
+  /** The CI Triage fingerprint parsed from the prompt marker, or `null`. */
+  readonly fingerprint: string | null;
+  /** A short, truncated approach summary, never the full prompt, when known. */
+  readonly summary: string | null;
+  /** The associated pull request, when the API exposes one. */
+  readonly pullRequest: AgentTaskPullRequestRef | null;
+}
+
+function asId(raw: unknown): string | null {
+  if (typeof raw === 'string' && raw !== '') {
+    return raw;
+  }
+  if (typeof raw === 'number' && Number.isFinite(raw)) {
+    return String(raw);
+  }
+  return null;
+}
+
+function asString(raw: unknown): string | null {
+  return typeof raw === 'string' && raw !== '' ? raw : null;
+}
+
+function truncateSummary(raw: unknown): string | null {
+  const text = asString(raw);
+  if (text === null) {
+    return null;
+  }
+  const firstLine = text.split('\n', 1)[0]?.trim() ?? '';
+  if (firstLine === '') {
+    return null;
+  }
+  return firstLine.length <= PREVIOUS_APPROACH_SUMMARY_MAX
+    ? firstLine
+    : `${firstLine.slice(0, PREVIOUS_APPROACH_SUMMARY_MAX)}…`;
+}
+
+function mapPullRequestRef(raw: unknown): AgentTaskPullRequestRef | null {
+  if (typeof raw !== 'object' || raw === null) {
+    return null;
+  }
+  const record = raw as Record<string, unknown>;
+  const number = record.number;
+  const url = asString(record.html_url ?? record.url);
+  if (typeof number !== 'number' || !Number.isFinite(number) || url === null) {
+    return null;
+  }
+  return {
+    number,
+    state: asString(record.state) ?? 'unknown',
+    url,
+  };
+}
+
+/**
+ * The candidate fields a task body may live under across preview API shapes. The
+ * fingerprint marker is searched in each so a format change on the server side
+ * does not silently break deduplication.
+ */
+function bodyTextOf(record: Record<string, unknown>): string | null {
+  const session =
+    typeof record.session === 'object' && record.session !== null
+      ? (record.session as Record<string, unknown>)
+      : undefined;
+  return (
+    asString(record.problem_statement) ??
+    asString(record.prompt) ??
+    asString(record.body) ??
+    (session !== undefined
+      ? (asString(session.problem_statement) ?? asString(session.prompt))
+      : null)
+  );
+}
+
+/**
+ * Reduce one raw task record to a bounded {@link AgentTaskListItem}, or `null`
+ * when it lacks the minimal identity (id and URL).
+ */
+export function mapTaskListItem(data: unknown): AgentTaskListItem | null {
+  if (typeof data !== 'object' || data === null) {
+    return null;
+  }
+  const record = data as Record<string, unknown>;
+  const id = asId(record.id);
+  const htmlUrl = asString(record.html_url ?? record.url);
+  if (id === null || htmlUrl === null) {
+    return null;
+  }
+  const body = bodyTextOf(record);
+  const fingerprint = body === null ? null : extractTaskFingerprint(body);
+  const session =
+    typeof record.session === 'object' && record.session !== null
+      ? (record.session as Record<string, unknown>)
+      : undefined;
+  const summary = truncateSummary(
+    record.summary ?? record.title ?? session?.summary,
+  );
+  return {
+    id,
+    htmlUrl,
+    state: asString(record.state),
+    fingerprint,
+    summary,
+    pullRequest: mapPullRequestRef(record.pull_request),
+  };
+}
+
+/**
+ * Reduce a raw list-tasks payload to bounded {@link AgentTaskListItem}s.
+ *
+ * Defensive across preview shapes: it accepts a bare array or an envelope
+ * carrying `agent_tasks`, `tasks`, or `items`, and silently drops any element
+ * that lacks the minimal identity rather than throwing.
+ */
+export function mapTaskList(data: unknown): readonly AgentTaskListItem[] {
+  let items: readonly unknown[];
+  if (Array.isArray(data)) {
+    items = data;
+  } else if (typeof data === 'object' && data !== null) {
+    const record = data as Record<string, unknown>;
+    const candidate =
+      record.agent_tasks ?? record.tasks ?? record.items ?? null;
+    items = Array.isArray(candidate) ? candidate : [];
+  } else {
+    items = [];
+  }
+  return items
+    .map((item) => mapTaskListItem(item))
+    .filter((item): item is AgentTaskListItem => item !== null);
 }
 
 /**

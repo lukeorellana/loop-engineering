@@ -8,7 +8,10 @@
  * resolver only ever reads).
  */
 import type {
+  LegacyCopilotPullRequest,
+  TriageCommit,
   TriageGitHubApi,
+  TriageHistoryGitHubApi,
   TriageWorkflowRun,
 } from '../../src/adapters/github/api.js';
 import type { CandidatePullRequest } from '../../src/domain/index.js';
@@ -56,5 +59,44 @@ export class FakeTriageGitHubApi implements TriageGitHubApi {
   async getBranchHeadSha(branch: string): Promise<string | null> {
     this.record('getBranchHeadSha', [branch]);
     return this.config.branchHeads?.[branch] ?? null;
+  }
+}
+
+export interface FakeHistoryConfig {
+  /** Commits returned by `listRecentCommits`, keyed by ref or SHA. */
+  recentCommits?: Record<string, readonly TriageCommit[]>;
+  /** Legacy Copilot pull requests returned by the fallback discovery. */
+  legacyPullRequests?: readonly LegacyCopilotPullRequest[];
+  /** When set, `listRecentCommits` throws this. */
+  commitsError?: unknown;
+  /** When set, `listLegacyCopilotPullRequests` throws this. */
+  legacyError?: unknown;
+}
+
+/** In-memory fake of the optional {@link TriageHistoryGitHubApi} boundary. */
+export class FakeTriageHistoryGitHubApi implements TriageHistoryGitHubApi {
+  readonly calls: FakeCall[] = [];
+
+  constructor(private readonly config: FakeHistoryConfig = {}) {}
+
+  async listRecentCommits(
+    refOrSha: string,
+    limit: number,
+  ): Promise<readonly TriageCommit[]> {
+    this.calls.push({ op: 'listRecentCommits', args: [refOrSha, limit] });
+    if (this.config.commitsError !== undefined) {
+      throw this.config.commitsError;
+    }
+    return this.config.recentCommits?.[refOrSha] ?? [];
+  }
+
+  async listLegacyCopilotPullRequests(): Promise<
+    readonly LegacyCopilotPullRequest[]
+  > {
+    this.calls.push({ op: 'listLegacyCopilotPullRequests', args: [] });
+    if (this.config.legacyError !== undefined) {
+      throw this.config.legacyError;
+    }
+    return this.config.legacyPullRequests ?? [];
   }
 }

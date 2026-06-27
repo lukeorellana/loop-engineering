@@ -68,6 +68,23 @@ export type PullRequestMode = (typeof PULL_REQUEST_MODES)[number];
  * - `pull-request-not-found`: no fix pull request could be resolved for the
  *   failed run (needs-human).
  *
+ * Idempotency, reconciliation, and history reason codes (the best-effort task
+ * deduplication contract; the public-preview API exposes no atomic idempotency
+ * key, so these reasons describe a best-effort, fingerprint-based reconciliation):
+ *
+ * - `agent-task-already-exists`: a task for this exact failed run attempt
+ *   already exists (matched by fingerprint), so no new task was started
+ *   (duplicate).
+ * - `agent-task-create-reconciled`: a create result was uncertain (for example a
+ *   timeout or decode failure), but a follow-up fingerprint search confirmed the
+ *   task was in fact created, so the existing task is returned (started).
+ * - `agent-task-reconciliation-failed`: an uncertain create result could not be
+ *   reconciled to an existing task, so the outcome is reported as operational
+ *   rather than silently assumed successful (operational-error).
+ * - `agent-task-history-unavailable`: optional previous-attempt history could not
+ *   be retrieved; this is recorded safely and never blocks a new task. It is not
+ *   itself a terminal outcome.
+ *
  * Agent Tasks provider reason codes (the Copilot Agent Tasks API boundary).
  * Each is a stable classification of an API failure; the credential/permission
  * and request-validation failures fail closed as configuration errors, while
@@ -116,6 +133,10 @@ export const TRIAGE_REASON_CODES = [
   'dry-run-preview',
   'task-started',
   'task-already-exists',
+  'agent-task-already-exists',
+  'agent-task-create-reconciled',
+  'agent-task-reconciliation-failed',
+  'agent-task-history-unavailable',
   'not-a-failed-run',
   'unsupported-event',
   'ambiguous-pull-request',

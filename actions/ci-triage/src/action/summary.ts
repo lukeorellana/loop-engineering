@@ -96,6 +96,12 @@ export function buildStepSummary(result: TriageResult): string {
   if (result.historyIncluded !== undefined) {
     summary += row('History included', yesNo(result.historyIncluded));
   }
+  if (result.historyUnavailable !== undefined) {
+    summary += row(
+      'Some history unavailable',
+      yesNo(result.historyUnavailable),
+    );
+  }
   if (result.additionalContextIncluded !== undefined) {
     summary += row(
       'Additional context included',

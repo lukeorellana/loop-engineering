@@ -16,6 +16,9 @@ import type {
 import { AgentTasksError } from '../../src/adapters/agent-tasks/errors.js';
 import type {
   AgentTasksProvider,
+  ExistingTask,
+  FindTaskResult,
+  RecentTasksResult,
   StartTaskInput,
   StartTaskResult,
 } from '../../src/adapters/agent-tasks/provider.js';
@@ -33,10 +36,18 @@ export interface FakeAgentTasksTransportConfig {
   readonly response?: unknown;
   /** When set, `createTask` throws this instead of returning a response. */
   readonly error?: unknown;
+  /** The raw payload returned from a successful `listTasks`. */
+  readonly listResponse?: unknown;
+  /** When set, `listTasks` throws this instead of returning a response. */
+  readonly listError?: unknown;
+  /** Raw payloads returned from `getTask`, keyed by task id. */
+  readonly taskDetails?: Record<string, unknown>;
 }
 
 export class FakeAgentTasksTransport implements AgentTasksTransport {
   readonly requests: AgentTaskRequestBody[] = [];
+  listCalls = 0;
+  readonly getCalls: string[] = [];
 
   constructor(private readonly config: FakeAgentTasksTransportConfig = {}) {}
 
@@ -47,14 +58,38 @@ export class FakeAgentTasksTransport implements AgentTasksTransport {
     }
     return this.config.response;
   }
+
+  async listTasks(): Promise<unknown> {
+    this.listCalls += 1;
+    if (this.config.listError !== undefined) {
+      throw this.config.listError;
+    }
+    return this.config.listResponse ?? [];
+  }
+
+  async getTask(taskId: string): Promise<unknown> {
+    this.getCalls.push(taskId);
+    return this.config.taskDetails?.[taskId] ?? null;
+  }
 }
 
 export interface FakeAgentTasksProviderConfig {
   readonly result?: StartTaskResult;
+  readonly findResult?: FindTaskResult;
+  readonly recentResult?: RecentTasksResult;
+  /**
+   * When set, `findTaskByFingerprint` returns each configured result in order
+   * across successive calls (the first for deduplication, the second for
+   * reconciliation), falling back to `findResult` once exhausted.
+   */
+  readonly findResults?: readonly FindTaskResult[];
 }
 
 export class FakeAgentTasksProvider implements AgentTasksProvider {
   readonly inputs: StartTaskInput[] = [];
+  readonly findFingerprints: string[] = [];
+  listRecentCalls = 0;
+  private findCallIndex = 0;
 
   constructor(private readonly config: FakeAgentTasksProviderConfig = {}) {}
 
@@ -67,6 +102,25 @@ export class FakeAgentTasksProvider implements AgentTasksProvider {
       }
     );
   }
+
+  async findTaskByFingerprint(fingerprint: string): Promise<FindTaskResult> {
+    this.findFingerprints.push(fingerprint);
+    const index = this.findCallIndex;
+    this.findCallIndex += 1;
+    if (this.config.findResults !== undefined) {
+      const sequenced = this.config.findResults[index];
+      if (sequenced !== undefined) {
+        return sequenced;
+      }
+    }
+    return this.config.findResult ?? { ok: true, task: null };
+  }
+
+  async listRecentTasks(): Promise<RecentTasksResult> {
+    this.listRecentCalls += 1;
+    return this.config.recentResult ?? { ok: true, tasks: [] };
+  }
 }
 
+export type { ExistingTask };
 export { AgentTasksError };

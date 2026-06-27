@@ -229,7 +229,7 @@ describe('executeAction — agent failures', () => {
     expect(result.reasonCode).toBe('agent-rate-limited');
   });
 
-  it('maps a transient failure to an operational error', async () => {
+  it('reconciles a transient create failure and reports reconciliation-failed when no task exists', async () => {
     const { result } = await run({
       provider: failure({
         ok: false,
@@ -238,10 +238,10 @@ describe('executeAction — agent failures', () => {
       }),
     });
     expect(result.outcome).toBe('operational-error');
-    expect(result.reasonCode).toBe('agent-transient');
+    expect(result.reasonCode).toBe('agent-task-reconciliation-failed');
   });
 
-  it('maps a malformed response to an operational error', async () => {
+  it('reconciles a malformed create response and reports reconciliation-failed when no task exists', async () => {
     const { result } = await run({
       provider: failure({
         ok: false,
@@ -250,7 +250,7 @@ describe('executeAction — agent failures', () => {
       }),
     });
     expect(result.outcome).toBe('operational-error');
-    expect(result.reasonCode).toBe('agent-unexpected-response');
+    expect(result.reasonCode).toBe('agent-task-reconciliation-failed');
   });
 });
 

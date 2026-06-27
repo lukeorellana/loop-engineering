@@ -7,6 +7,7 @@
  * exercised end-to-end with in-memory doubles.
  */
 export * from './core.js';
+export * from './history.js';
 export * from './inputs.js';
 export * from './outputs.js';
 export * from './result.js';

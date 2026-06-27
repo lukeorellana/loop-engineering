@@ -19,7 +19,10 @@ import type { AgentTaskRequestBody, AgentTasksTransport } from './api.js';
 import {
   AGENT_TASKS_API_VERSION,
   AGENT_TASKS_CREATE_METHOD,
+  AGENT_TASKS_READ_METHOD,
   agentTasksCreatePath,
+  agentTasksListPath,
+  agentTasksReadPath,
 } from './endpoint.js';
 
 /** The authenticated client surface this transport depends on. */
@@ -49,6 +52,28 @@ export class OctokitAgentTasksTransport implements AgentTasksTransport {
       `${AGENT_TASKS_CREATE_METHOD} ${path}`,
       {
         ...body,
+        headers: { 'X-GitHub-Api-Version': AGENT_TASKS_API_VERSION },
+      },
+    );
+    return response.data;
+  }
+
+  async listTasks(): Promise<unknown> {
+    const path = agentTasksListPath(this.owner, this.repo);
+    const response = await this.octokit.request(
+      `${AGENT_TASKS_READ_METHOD} ${path}`,
+      {
+        headers: { 'X-GitHub-Api-Version': AGENT_TASKS_API_VERSION },
+      },
+    );
+    return response.data;
+  }
+
+  async getTask(taskId: string): Promise<unknown> {
+    const path = agentTasksReadPath(this.owner, this.repo, taskId);
+    const response = await this.octokit.request(
+      `${AGENT_TASKS_READ_METHOD} ${path}`,
+      {
         headers: { 'X-GitHub-Api-Version': AGENT_TASKS_API_VERSION },
       },
     );
