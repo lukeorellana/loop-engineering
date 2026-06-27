@@ -6,14 +6,15 @@ a human in the loop: a person reviews and merges every fix pull request.
 
 > **Status:** This is the initial package. It defines the stable public
 > contract — every v1 input, output, outcome, and reason code — validates
-> inputs end to end, and resolves the failed run's delivery target. Prompt
-> generation and Agent Tasks calls are intentionally **not implemented yet**, so
-> the resolver is not yet wired into the entry point: with valid inputs the
-> action still reports the `operational-error` outcome with the
-> `orchestration-not-implemented` reason code, and a dry run reports a successful
-> `dry-run` preview without performing any Agent Tasks writes. The reusable
-> contract lives under `src/domain/` (outcomes, pull-request modes, reason codes,
-> and the pure target-resolution decisions) and is re-exported from
+> inputs end to end, resolves the failed run's delivery target, and builds the
+> hardened Copilot investigation prompt. Agent Tasks calls are intentionally
+> **not implemented yet**, so neither the resolver nor the prompt builder is
+> wired into the entry point: with valid inputs the action still reports the
+> `operational-error` outcome with the `orchestration-not-implemented` reason
+> code, and a dry run reports a successful `dry-run` preview without performing
+> any Agent Tasks writes. The reusable contract lives under `src/domain/`
+> (outcomes, pull-request modes, reason codes, the pure target-resolution
+> decisions, and the pure triage-prompt builder) and is re-exported from
 > `src/contracts.ts`; the failed-run and pull-request target resolver
 > (`resolveTriageTarget`) lives under `src/adapters/github/` over a narrow,
 > mockable GitHub API boundary; the input/output mapping and composition root
@@ -76,6 +77,54 @@ additionally produces the failed-run and pull-request codes
 `fork-pull-request`, `existing-mode-requires-pull-request`,
 `target-branch-not-found`, and `stale-workflow-run`). The remaining codes reserve
 stable vocabulary for later versions.
+
+## Triage prompt
+
+The pure, I/O-free triage-prompt builder lives in
+[`src/domain/prompt.ts`](src/domain/prompt.ts) (`buildTriagePrompt`). It turns
+trusted, already-resolved failed-run metadata and delivery target into one
+deterministic investigation prompt. It never downloads or parses workflow logs,
+resolves runs or pull-request targets, or calls the Agent Tasks API; the action
+resolves those facts elsewhere and hands the trusted values in.
+
+The prompt always identifies one exact failed workflow run and run attempt, tells
+Copilot to inspect that pipeline directly (starting from the failure summary and
+fetching job or full logs only when needed), and includes the resolved
+PR/branch delivery target so the agent knows where it is working. It carries a
+hidden, machine-readable fingerprint
+(`<!-- ci-triage-fingerprint: ... -->`) derived only from non-secret identity
+metadata, for later reconciliation.
+
+### Trust boundary
+
+The prompt separates **trusted** instructions from **untrusted** evidence:
+
+- Trusted: the standard prompt, the resolved run/target metadata, and the
+  repository-owner `prompt-instructions`.
+- Untrusted: workflow logs, commit messages, pull-request bodies, test output,
+  exception text, recent history, and `additional-context`. Instructions
+  embedded in that evidence must never override the standard prompt or
+  repository-owned instructions.
+
+### Size limits
+
+Each variable section and the final prompt are independently bounded, with a
+deterministic `[ci-triage:truncated]` marker appended when a section is
+shortened (see `PROMPT_LIMITS` in
+[`src/domain/prompt.ts`](src/domain/prompt.ts)): `prompt-instructions` (4000),
+`additional-context` (8000), recent commit history (4000), previous task history
+(4000), and the final prompt (32000).
+
+The full prompt text and untrusted evidence are sensitive and are never written
+to normal logs or `GITHUB_STEP_SUMMARY`; use `summarizeTriagePrompt` for a
+redaction-safe view (fingerprint, length, and which sections were truncated).
+
+### Optional consumer skill
+
+[`examples/skills/github-actions-failure-debugging/SKILL.md`](examples/skills/github-actions-failure-debugging/SKILL.md)
+is an optional skill that reinforces the same workflow-log investigation process.
+The action does **not** require consumers to install it; the prompt already
+instructs the agent to investigate the failed pipeline directly.
 
 ## Development
 
