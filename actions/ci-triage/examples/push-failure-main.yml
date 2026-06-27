@@ -1,0 +1,38 @@
+# Reference consumer workflow: push failure on `main` creates a remediation PR.
+#
+# Copy into a repository as `.github/workflows/ci-triage.yml`. When the source
+# `CI` workflow fails on a PUSH to `main`, CI Triage opens a remediation pull
+# request targeting `main` (head branch `ci-triage/main`). A push-triggered
+# failure has no existing PR to update, so auto resolves to "new".
+name: CI Triage (push to main)
+
+on:
+  workflow_run:
+    workflows: ['CI']
+    types: [completed]
+
+concurrency:
+  group: ci-triage-${{ github.repository }}-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}
+  cancel-in-progress: false
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    # Only triage push failures on main. Branch/event conditions live here.
+    if: >-
+      ${{ github.event.workflow_run.conclusion == 'failure'
+          && github.event.workflow_run.event == 'push'
+          && github.event.workflow_run.head_branch == 'main' }}
+    steps:
+      - name: Triage the failed push and open a remediation PR
+        uses: lukeorellana/loop-engineering/actions/ci-triage@v1
+        with:
+          github-token: ${{ github.token }}
+          agent-token: ${{ secrets.CI_TRIAGE_AGENT_TOKEN }}
+          # auto on a push failure resolves to a new remediation PR on `main`.
+          pull-request-mode: auto

@@ -24,6 +24,27 @@ The action is packaged with the same Node 20 TypeScript model as
 [`feature-loop`](../feature-loop): TypeScript sources under `src/`, bundled with
 [`@vercel/ncc`](https://github.com/vercel/ncc) into a committed `dist/index.js`.
 
+## Documentation
+
+A new repository can adopt CI Triage from these guides and the
+[examples](examples/README.md) without reading the source:
+
+- [Setup guide](docs/setup.md) — prerequisites and a step-by-step adoption path.
+- [Reference](docs/reference.md) — every input, output, outcome, and reason code,
+  plus the pull-request-mode matrix.
+- [Pipeline targeting](docs/pipeline-targeting.md) — which workflows trigger
+  triage and where that decision lives (the consumer workflow).
+- [Security model](docs/security.md) — trust boundaries, token responsibilities,
+  and required permissions.
+- [Operational behavior & public-preview limits](docs/operations.md) — what the
+  action guarantees and what the preview API does not.
+- [Troubleshooting & recovery](docs/troubleshooting.md) — how to act on every
+  outcome and reason.
+- [Integration validation](docs/integration-validation.md) — the disposable
+  end-to-end validation plan.
+- [Release & versioning](docs/release.md) — the repository-wide release model
+  shared with Feature Loop.
+
 ## Inputs
 
 | Input                 | Required | Default               | Description                                                                                          |

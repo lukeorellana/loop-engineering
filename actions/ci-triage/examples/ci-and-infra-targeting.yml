@@ -1,0 +1,61 @@
+# Reference consumer workflow: mixed `ci` and `infra` targeting.
+#
+# Copy into a repository as `.github/workflows/ci-triage.yml`. ONE triage
+# workflow watches TWO source workflows (`ci` and `infra`) and applies different
+# job-level conditions to each:
+#
+#   - `ci` failures are triaged for pull-request-triggered runs.
+#   - `infra` failures are triaged only on `main`.
+#
+# `on.workflow_run.workflows` selects WHICH named workflows can start triage;
+# everything else (event, branch, conclusion) belongs in each job's `if`. The
+# action cannot change which workflows trigger GitHub before the job starts, so
+# this targeting lives here in the consumer workflow. Renaming a source workflow
+# requires updating the `workflows:` list below.
+name: CI Triage (ci + infra)
+
+on:
+  workflow_run:
+    # Match the exact `name:` of each source workflow.
+    workflows: ['ci', 'infra']
+    types: [completed]
+
+concurrency:
+  group: ci-triage-${{ github.repository }}-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}
+  cancel-in-progress: false
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+
+jobs:
+  triage-ci:
+    runs-on: ubuntu-latest
+    # ci: only pull-request-triggered failures.
+    if: >-
+      ${{ github.event.workflow_run.name == 'ci'
+          && github.event.workflow_run.conclusion == 'failure'
+          && github.event.workflow_run.event == 'pull_request' }}
+    steps:
+      - name: Triage a ci pull-request failure
+        uses: lukeorellana/loop-engineering/actions/ci-triage@v1
+        with:
+          github-token: ${{ github.token }}
+          agent-token: ${{ secrets.CI_TRIAGE_AGENT_TOKEN }}
+          pull-request-mode: auto
+
+  triage-infra:
+    runs-on: ubuntu-latest
+    # infra: only failures on main.
+    if: >-
+      ${{ github.event.workflow_run.name == 'infra'
+          && github.event.workflow_run.conclusion == 'failure'
+          && github.event.workflow_run.head_branch == 'main' }}
+    steps:
+      - name: Triage an infra failure on main
+        uses: lukeorellana/loop-engineering/actions/ci-triage@v1
+        with:
+          github-token: ${{ github.token }}
+          agent-token: ${{ secrets.CI_TRIAGE_AGENT_TOKEN }}
+          pull-request-mode: auto

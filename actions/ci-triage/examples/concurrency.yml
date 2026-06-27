@@ -1,0 +1,38 @@
+# Reference consumer workflow: recommended concurrency.
+#
+# Copy into a repository as `.github/workflows/ci-triage.yml`. Demonstrates the
+# RECOMMENDED concurrency group keyed by repository, workflow run id, and run
+# attempt.
+#
+# Why: CI Triage deduplicates per failed run ATTEMPT on a best-effort basis, but
+# the public-preview Agent Tasks API exposes no atomic idempotency key. Keying
+# the concurrency group on run id AND run attempt serializes duplicate deliveries
+# of the SAME attempt (they queue and reconcile to one task) while still letting a
+# genuinely NEW attempt run independently. `cancel-in-progress: false` queues
+# rather than cancels.
+name: CI Triage (concurrency)
+
+on:
+  workflow_run:
+    workflows: ['CI']
+    types: [completed]
+
+concurrency:
+  group: ci-triage-${{ github.repository }}-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}
+  cancel-in-progress: false
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'failure' }}
+    steps:
+      - name: Triage the failed CI run
+        uses: lukeorellana/loop-engineering/actions/ci-triage@v1
+        with:
+          github-token: ${{ github.token }}
+          agent-token: ${{ secrets.CI_TRIAGE_AGENT_TOKEN }}

@@ -1,0 +1,49 @@
+# Reference consumer workflow: PR failure with pull-request-mode: auto.
+#
+# Copy into a repository as `.github/workflows/ci-triage.yml`. When the source
+# `CI` workflow fails on a pull-request-triggered run, CI Triage hands the exact
+# failed run to Copilot Agent Tasks, which UPDATES the existing fix pull request
+# in place (auto resolves to "existing" for a PR-triggered failure).
+#
+# The triage workflow must exist on the repository's DEFAULT BRANCH for
+# `workflow_run` to fire. It has no `actions/checkout` step: it never checks out
+# or executes failed-branch code.
+name: CI Triage
+
+on:
+  workflow_run:
+    # Match the exact `name:` of the source workflow(s) to watch.
+    workflows: ['CI']
+    types: [completed]
+
+# Serialize duplicate executions of the same failed run attempt so they queue
+# rather than race (best-effort idempotency has no atomic key).
+concurrency:
+  group: ci-triage-${{ github.repository }}-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}
+  cancel-in-progress: false
+
+# Minimal read-only scopes. All Agent Tasks writes go through `agent-token`.
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    # Only triage genuine failures of a pull-request-triggered source run.
+    # Targeting (event/branch conditions) belongs here, in the consumer job `if`.
+    if: >-
+      ${{ github.event.workflow_run.conclusion == 'failure'
+          && github.event.workflow_run.event == 'pull_request' }}
+    steps:
+      - name: Triage the failed CI run
+        uses: lukeorellana/loop-engineering/actions/ci-triage@v1
+        with:
+          # Read-only repository/run/PR reads; the workflow token is sufficient.
+          github-token: ${{ github.token }}
+          # Required: the workflow token cannot start Agent Tasks. Provide a
+          # credential with the Agent Tasks permission as a secret.
+          agent-token: ${{ secrets.CI_TRIAGE_AGENT_TOKEN }}
+          # auto: reuse the matching open PR and update it in place.
+          pull-request-mode: auto
