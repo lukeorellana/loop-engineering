@@ -497,7 +497,7 @@ describe('sanitizeError — GraphQL classification', () => {
 });
 
 describe('GitHubRepositoryAdapter reprioritizeSubIssue transport', () => {
-  it('sends the resolved parent, child, and after identifiers', async () => {
+  it('sends the parent number and resolved child and after database ids', async () => {
     const api = new FakeGitHubApi({
       issues: {
         1: fakeIssue({ number: 1 }),
@@ -507,7 +507,11 @@ describe('GitHubRepositoryAdapter reprioritizeSubIssue transport', () => {
       subIssues: { 1: [11, 12] },
       parents: { 11: 1, 12: 1 },
     });
-    await adapterFor(api).reprioritizeSubIssue(1, 'node-12', 'node-11');
+    await adapterFor(api).reprioritizeSubIssue(
+      1,
+      FakeGitHubApi.databaseIdOf(12),
+      FakeGitHubApi.databaseIdOf(11),
+    );
     expect(api.reprioritized).toContainEqual({ parent: 1, sub: 12, after: 11 });
   });
 });

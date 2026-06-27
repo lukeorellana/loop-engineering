@@ -14,6 +14,7 @@ import type {
   ApiPage,
   ApiPullRequest,
   ApiRepository,
+  ApiSubIssueRef,
   GitHubApi,
 } from '../../src/adapters/github/api.js';
 import { parseClosingKeywords } from '../../src/domain/index.js';
@@ -98,6 +99,15 @@ export class FakeGitHubApi implements GitHubApi {
   reprioritizeFailures = 0;
   /** Throw a transient transport error on the first N `listSubIssues`. */
   listFailures = 0;
+  /**
+   * Number of `listSubIssues` reads that keep returning the pre-mutation order
+   * after a `reprioritizeSubIssue` is accepted, modeling an eventually
+   * consistent reorder. A value larger than the verification budget models the
+   * reported bug where the mutation is accepted but the authoritative order
+   * never reflects it.
+   */
+  reorderConvergenceDelay = 0;
+  private staleOrder = new Map<number, { order: number[]; reads: number }>();
   /**
    * Factory for the simulated transient transport error. Defaults to a
    * statusless GraphQL `UNPROCESSABLE` error, which the adapter classifies as
@@ -221,12 +231,26 @@ export class FakeGitHubApi implements GitHubApi {
   async listSubIssues(
     issueNumber: number,
     page: number,
-  ): Promise<ApiPage<ApiNumberRef>> {
+  ): Promise<ApiPage<ApiSubIssueRef>> {
     this.record('listSubIssues', issueNumber, page);
     this.listSubIssuesCalls += 1;
     if (this.listFailures > 0) {
       this.listFailures -= 1;
       throw this.transientError();
+    }
+    // A pending stale snapshot models an eventually-consistent reorder: reads
+    // keep returning the pre-mutation order until the snapshot is drained.
+    const stale = this.staleOrder.get(issueNumber);
+    if (stale !== undefined && stale.reads > 0) {
+      stale.reads -= 1;
+      if (stale.reads === 0) {
+        this.staleOrder.delete(issueNumber);
+      }
+      const staleRefs = stale.order.map((number) => ({
+        number,
+        databaseId: FakeGitHubApi.databaseIdOf(number),
+      }));
+      return paginate(staleRefs, this.pageSize)(page);
     }
     let numbers = this.subIssuesOf(issueNumber) ?? [];
     if (
@@ -237,7 +261,10 @@ export class FakeGitHubApi implements GitHubApi {
         (number) => !this.hiddenUntilVisible.includes(number),
       );
     }
-    const refs = numbers.map((number) => ({ number }));
+    const refs = numbers.map((number) => ({
+      number,
+      databaseId: FakeGitHubApi.databaseIdOf(number),
+    }));
     return paginate(refs, this.pageSize)(page);
   }
 
@@ -277,6 +304,19 @@ export class FakeGitHubApi implements GitHubApi {
 
   private static numberFromNodeId(nodeId: string): number {
     return Number(nodeId.replace(/^node-/, ''));
+  }
+
+  // Issue REST database ids are modeled as a distinct, offset identifier space
+  // so a test fails fast if a node id or issue number is ever passed where a
+  // database id is expected (and vice versa).
+  private static readonly REST_ID_BASE = 1_000_000;
+
+  static databaseIdOf(issueNumber: number): number {
+    return FakeGitHubApi.REST_ID_BASE + issueNumber;
+  }
+
+  private static numberFromDatabaseId(databaseId: number): number {
+    return databaseId - FakeGitHubApi.REST_ID_BASE;
   }
 
   async getIssueNodeId(issueNumber: number): Promise<string | null> {
@@ -336,14 +376,16 @@ export class FakeGitHubApi implements GitHubApi {
   }
 
   async reprioritizeSubIssue(
-    parentId: string,
-    subIssueId: string,
-    afterId: string | null,
+    parentNumber: number,
+    subIssueDatabaseId: number,
+    afterDatabaseId: number | null,
   ): Promise<void> {
-    const parent = FakeGitHubApi.numberFromNodeId(parentId);
-    const sub = FakeGitHubApi.numberFromNodeId(subIssueId);
+    const parent = parentNumber;
+    const sub = FakeGitHubApi.numberFromDatabaseId(subIssueDatabaseId);
     const after =
-      afterId === null ? null : FakeGitHubApi.numberFromNodeId(afterId);
+      afterDatabaseId === null
+        ? null
+        : FakeGitHubApi.numberFromDatabaseId(afterDatabaseId);
     if (this.reprioritizeFailures > 0) {
       this.reprioritizeFailures -= 1;
       this.record('reprioritizeSubIssue:failed', parent, sub, after);
@@ -354,6 +396,15 @@ export class FakeGitHubApi implements GitHubApi {
     const list = this.subIssuesStore().get(parent);
     if (list === undefined) {
       return;
+    }
+    // Capture the pre-mutation order so subsequent reads can model an
+    // eventually-consistent (or, when the delay exceeds the budget, an
+    // effectively non-converging) reorder.
+    if (this.reorderConvergenceDelay > 0) {
+      this.staleOrder.set(parent, {
+        order: [...list],
+        reads: this.reorderConvergenceDelay,
+      });
     }
     const index = list.indexOf(sub);
     if (index !== -1) {

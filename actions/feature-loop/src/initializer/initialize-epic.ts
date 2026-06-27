@@ -24,6 +24,7 @@ import {
   type ExecutionPlan,
 } from '../domain/plan.js';
 import type { GitHubRepositoryPort } from '../ports/github-repository.js';
+import type { NativeSubIssue } from '../ports/github-repository.js';
 import type { Logger } from '../ports/logger.js';
 import {
   HIERARCHY_BACKOFF,
@@ -166,91 +167,225 @@ async function waitForMembership(
 }
 
 /**
- * Move `sub` so it immediately follows `after`, state-aware and incremental:
- * re-read current order before each move, skip when adjacency already holds,
- * execute the smallest required move, then re-read to verify. Transient failures
- * retry within the bounded budget; permanent failures stop immediately.
+ * Poll the authoritative native sub-issue order with bounded backoff until
+ * `isSatisfied` accepts the observed order. Each successful read is reported to
+ * `onObserve` so callers can log the observed issue-number order. The outcome
+ * distinguishes three terminal states so callers can build precise diagnostics:
+ *
+ *   - `ok`: the predicate was satisfied; the converged order is returned.
+ *   - `!ok` with `error`: a read failed permanently, or transient read failures
+ *     exhausted the budget.
+ *   - `!ok` with `error: null`: reads succeeded but the predicate never held
+ *     within the budget (a convergence timeout); `lastNative` is the last order.
+ */
+async function pollNativeOrder(
+  ctx: HierarchyContext,
+  isSatisfied: (native: readonly NativeSubIssue[]) => boolean,
+  onObserve?: (native: readonly NativeSubIssue[]) => void,
+): Promise<
+  | { readonly ok: true; readonly native: readonly NativeSubIssue[] }
+  | {
+      readonly ok: false;
+      readonly lastNative: readonly NativeSubIssue[] | null;
+      readonly error: RepositoryApiError | null;
+    }
+> {
+  const { repository, epicNumber, policy, timing } = ctx;
+  let lastNative: readonly NativeSubIssue[] | null = null;
+  let lastError: RepositoryApiError | null = null;
+  for (let attempt = 1; attempt <= policy.maxAttempts; attempt += 1) {
+    try {
+      const native = await repository.getNativeSubIssues(epicNumber);
+      lastNative = native;
+      onObserve?.(native);
+      if (isSatisfied(native)) {
+        return { ok: true, native };
+      }
+      // A successful but unsatisfied read is a convergence timeout, not a
+      // transport failure: clear any prior transient error.
+      lastError = null;
+    } catch (error) {
+      if (!(error instanceof RepositoryApiError)) {
+        throw error;
+      }
+      if (!error.retryable) {
+        return { ok: false, lastNative, error };
+      }
+      lastError = error;
+    }
+    if (attempt >= policy.maxAttempts) {
+      break;
+    }
+    await timing.sleep(backoffDelayMs(policy, attempt, timing.random));
+  }
+  return { ok: false, lastNative, error: lastError };
+}
+
+/** Render an observed native order as its issue-number list for logging. */
+function observedNumbers(native: readonly NativeSubIssue[]): number[] {
+  return native.map((sub) => sub.number);
+}
+
+/**
+ * Move `sub` so it immediately follows `after`, separating mutation retry from
+ * verification polling against one authoritative REST surface:
+ *
+ *   1. read the current order and log it;
+ *   2. skip the write when adjacency already holds, or wait for both endpoints
+ *      to become visible;
+ *   3. send exactly one priority mutation, retrying only when that mutation
+ *      throws a retryable error (permanent errors stop immediately);
+ *   4. after the mutation is accepted, poll the order — without resending the
+ *      mutation — until adjacency converges, logging each observed order.
+ *
+ * A convergence timeout reports the expected adjacency, the last observed order,
+ * and that the mutation was accepted, so the failure is actionable.
  */
 async function ensureAdjacency(
   ctx: HierarchyContext,
   move: {
     readonly sub: number;
-    readonly subId: string;
     readonly after: number;
-    readonly afterId: string;
   },
 ): Promise<HierarchyOutcome> {
-  const { repository, logger, epicNumber, policy, timing } = ctx;
-  const { sub, subId, after, afterId } = move;
-  let lastError: RepositoryApiError | null = null;
-  for (let attempt = 1; attempt <= policy.maxAttempts; attempt += 1) {
-    let native: readonly number[];
-    try {
-      native = await repository.getNativeSubIssueNumbers(epicNumber);
-    } catch (error) {
-      if (!(error instanceof RepositoryApiError)) {
-        throw error;
-      }
-      if (!error.retryable) {
-        return { ok: false, messages: [error.message] };
-      }
-      lastError = error;
-      if (attempt >= policy.maxAttempts) {
-        break;
-      }
-      logger.info(
-        `Feature Loop: reprioritize retry ${attempt + 1}/${policy.maxAttempts}`,
-        { epic: epicNumber, issue: sub },
+  const { logger, epicNumber, policy, timing, repository } = ctx;
+  const { sub, after } = move;
+
+  // 1-2. Read the current order; skip when already adjacent; otherwise wait for
+  // both endpoints to be visible before attempting a move.
+  const ready = await pollNativeOrder(
+    ctx,
+    (native) => {
+      const numbers = observedNumbers(native);
+      return (
+        adjacencySatisfied(numbers, sub, after) ||
+        (numbers.includes(sub) && numbers.includes(after))
       );
-      await timing.sleep(backoffDelayMs(policy, attempt, timing.random));
-      continue;
-    }
-
-    // Adjacency may have converged asynchronously: skip the write when correct.
-    if (adjacencySatisfied(native, sub, after)) {
-      return { ok: true };
-    }
-
-    // Both endpoints must be visible before a move can reference them.
-    if (!native.includes(sub) || !native.includes(after)) {
-      if (attempt >= policy.maxAttempts) {
-        break;
-      }
-      await timing.sleep(backoffDelayMs(policy, attempt, timing.random));
-      continue;
-    }
-
-    logger.info(`Feature Loop: reprioritizing issue #${sub} after #${after}`, {
-      epic: epicNumber,
-    });
-    try {
-      await repository.reprioritizeSubIssue(epicNumber, subId, afterId);
-    } catch (error) {
-      if (!(error instanceof RepositoryApiError)) {
-        throw error;
-      }
-      if (!error.retryable) {
-        return { ok: false, messages: [error.message] };
-      }
-      lastError = error;
-      if (attempt >= policy.maxAttempts) {
-        break;
-      }
-      logger.info(
-        `Feature Loop: reprioritize retry ${attempt + 1}/${policy.maxAttempts}`,
-        { epic: epicNumber, issue: sub },
-      );
-      await timing.sleep(backoffDelayMs(policy, attempt, timing.random));
-      continue;
-    }
-    // The write succeeded; the next iteration re-reads to verify the move.
+    },
+    (native) =>
+      logger.info('Feature Loop: observed native order before reorder', {
+        epic: epicNumber,
+        sub,
+        after,
+        order: observedNumbers(native),
+      }),
+  );
+  if (!ready.ok) {
+    return {
+      ok: false,
+      messages: [readFailureMessage(ctx, ready, sub, after)],
+    };
   }
-  const reason =
-    lastError !== null
-      ? retryExhaustedMessage(lastError, policy)
-      : `Epic #${epicNumber} reorder of issue #${sub} after #${after} ` +
-        `did not converge within ${policy.maxAttempts} attempts.`;
-  return { ok: false, messages: [reason] };
+
+  const current = observedNumbers(ready.native);
+  if (adjacencySatisfied(current, sub, after)) {
+    // Adjacency already holds (possibly converged asynchronously): no write.
+    return { ok: true };
+  }
+
+  const subId = ready.native.find((entry) => entry.number === sub)?.databaseId;
+  const afterId = ready.native.find(
+    (entry) => entry.number === after,
+  )?.databaseId;
+  if (subId === undefined || afterId === undefined) {
+    // Unreachable: the read predicate guarantees both endpoints are visible.
+    return {
+      ok: false,
+      messages: [
+        `Epic #${epicNumber} reorder of issue #${sub} after #${after} could ` +
+          `not resolve sub-issue database ids from the native order ` +
+          `[${current.join(', ')}].`,
+      ],
+    };
+  }
+
+  // 3. Send exactly one priority mutation, retrying only retryable failures.
+  logger.info(`Feature Loop: reprioritizing issue #${sub} after #${after}`, {
+    epic: epicNumber,
+  });
+  const mutation = await retryTransient(
+    () => repository.reprioritizeSubIssue(epicNumber, subId, afterId),
+    policy,
+    timing,
+    (nextAttempt) =>
+      logger.info(
+        `Feature Loop: reprioritize retry ${nextAttempt}/${policy.maxAttempts}`,
+        { epic: epicNumber, issue: sub },
+      ),
+  );
+  if (!mutation.ok) {
+    const message = mutation.error.retryable
+      ? retryExhaustedMessage(mutation.error, policy)
+      : mutation.error.message;
+    return { ok: false, messages: [message] };
+  }
+
+  // 4. Poll for convergence without resending the mutation.
+  let lastObserved: readonly number[] = current;
+  const verified = await pollNativeOrder(
+    ctx,
+    (native) => adjacencySatisfied(observedNumbers(native), sub, after),
+    (native) => {
+      lastObserved = observedNumbers(native);
+      logger.info('Feature Loop: observed native order during verification', {
+        epic: epicNumber,
+        sub,
+        after,
+        order: lastObserved,
+      });
+    },
+  );
+  if (verified.ok) {
+    return { ok: true };
+  }
+  if (verified.error !== null) {
+    const message = verified.error.retryable
+      ? retryExhaustedMessage(verified.error, policy)
+      : verified.error.message;
+    return { ok: false, messages: [message] };
+  }
+  const observed = verified.lastNative
+    ? observedNumbers(verified.lastNative)
+    : lastObserved;
+  return {
+    ok: false,
+    messages: [
+      `Epic #${epicNumber} reorder did not converge within ` +
+        `${policy.maxAttempts} verification attempts: expected issue #${sub} ` +
+        `immediately after #${after}; last observed order [${observed.join(
+          ', ',
+        )}]; priority mutation accepted: true.`,
+    ],
+  };
+}
+
+/**
+ * Build a safe message for a failed pre-move read: an exhausted/permanent read
+ * error, or a visibility timeout where both endpoints never became visible.
+ */
+function readFailureMessage(
+  ctx: HierarchyContext,
+  outcome: {
+    readonly lastNative: readonly NativeSubIssue[] | null;
+    readonly error: RepositoryApiError | null;
+  },
+  sub: number,
+  after: number,
+): string {
+  if (outcome.error !== null) {
+    return outcome.error.retryable
+      ? retryExhaustedMessage(outcome.error, ctx.policy)
+      : outcome.error.message;
+  }
+  const observed = outcome.lastNative
+    ? observedNumbers(outcome.lastNative)
+    : [];
+  return (
+    `Epic #${ctx.epicNumber} reorder of issue #${sub} after #${after} could ` +
+    `not begin: both sub-issues were not visible within ` +
+    `${ctx.policy.maxAttempts} attempts; last observed order ` +
+    `[${observed.join(', ')}]; priority mutation accepted: false.`
+  );
 }
 
 /**
@@ -515,23 +650,13 @@ export async function initializeEpic(
     });
   }
 
-  // Reorder native sub-issues to match the intended order. Each move is
-  // state-aware and incremental: re-read current order, skip already-satisfied
-  // adjacency, perform the smallest move, then verify before continuing.
+  // Reorder native sub-issues to match the intended order. Each move reads the
+  // authoritative order, skips already-satisfied adjacency, sends one priority
+  // mutation, then polls the same surface until the move is verified.
   for (let index = 1; index < intendedIssues.length; index += 1) {
     const sub = intendedIssues[index];
     const after = intendedIssues[index - 1];
-    const subId = nodeIds.get(sub);
-    const afterId = nodeIds.get(after);
-    if (subId === undefined || afterId === undefined) {
-      continue;
-    }
-    const moved = await ensureAdjacency(hierarchy, {
-      sub,
-      subId,
-      after,
-      afterId,
-    });
+    const moved = await ensureAdjacency(hierarchy, { sub, after });
     if (!moved.ok) {
       return {
         kind: 'failed',

@@ -25,6 +25,7 @@ import type {
   GitHubRepositoryPort,
   IssueIdentity,
   MarkdownSubIssueDiscovery,
+  NativeSubIssue,
   RepositoryInfo,
 } from '../../ports/github-repository.js';
 import type { ExecutionPlan } from '../../domain/plan.js';
@@ -240,13 +241,23 @@ export class GitHubRepositoryAdapter implements GitHubRepositoryPort {
     return subIssues;
   }
 
-  async getNativeSubIssueNumbers(
+  async getNativeSubIssues(
     epicNumber: number,
-  ): Promise<readonly number[]> {
+  ): Promise<readonly NativeSubIssue[]> {
     const refs = await this.collectAll('list native sub-issues', (page) =>
       this.api.listSubIssues(epicNumber, page),
     );
-    return refs.map((ref) => ref.number);
+    return refs.map((ref) => ({
+      number: ref.number,
+      databaseId: ref.databaseId,
+    }));
+  }
+
+  async getNativeSubIssueNumbers(
+    epicNumber: number,
+  ): Promise<readonly number[]> {
+    const subIssues = await this.getNativeSubIssues(epicNumber);
+    return subIssues.map((sub) => sub.number);
   }
 
   async getIssueIdentity(issueNumber: number): Promise<IssueIdentity | null> {
@@ -299,12 +310,15 @@ export class GitHubRepositoryAdapter implements GitHubRepositoryPort {
 
   async reprioritizeSubIssue(
     epicNumber: number,
-    subIssueId: string,
-    afterId: string | null,
+    subIssueDatabaseId: number,
+    afterDatabaseId: number | null,
   ): Promise<void> {
-    const parentId = await this.epicNodeId(epicNumber);
     await this.run('reprioritize sub-issue', () =>
-      this.api.reprioritizeSubIssue(parentId, subIssueId, afterId),
+      this.api.reprioritizeSubIssue(
+        epicNumber,
+        subIssueDatabaseId,
+        afterDatabaseId,
+      ),
     );
   }
 

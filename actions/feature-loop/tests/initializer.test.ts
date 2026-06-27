@@ -524,3 +524,114 @@ describe('initializeEpic — LingoQuest race recovery (integration)', () => {
     expect(result.kind === 'initialized' && result.plan.issues).toEqual(issues);
   });
 });
+
+describe('initializeEpic — authoritative reorder convergence', () => {
+  it('normalizes a fully reversed order to the intended order', async () => {
+    const issues = [11, 12, 13, 14, 15];
+    const { result, api } = await init({
+      config: epicConfig(
+        issues.map((number) => fakeIssue({ number })),
+        {
+          subIssues: { 1: [15, 14, 13, 12, 11] },
+          parents: { 11: 1, 12: 1, 13: 1, 14: 1, 15: 1 },
+        },
+      ),
+      intendedIssues: issues,
+    });
+
+    expect(result.kind).toBe('initialized');
+    const finalOrder = await api.listSubIssues(1, 1);
+    expect(finalOrder.items.map((ref) => ref.number)).toEqual(issues);
+  });
+
+  it('reorders the exact LingoQuest plan [171..178]', async () => {
+    const issues = [171, 172, 173, 174, 175, 176, 177, 178];
+    const { result, api } = await init({
+      config: epicConfig(
+        issues.map((number) => fakeIssue({ number })),
+        // Linked but fully reversed, exercising the reported epic's plan.
+        {
+          subIssues: { 1: [...issues].reverse() },
+          parents: Object.fromEntries(issues.map((number) => [number, 1])),
+        },
+      ),
+      intendedIssues: issues,
+    });
+
+    expect(result.kind).toBe('initialized');
+    const finalOrder = await api.listSubIssues(1, 1);
+    expect(finalOrder.items.map((ref) => ref.number)).toEqual(issues);
+    expect(result.kind === 'initialized' && result.plan.issues).toEqual(issues);
+  });
+
+  it('converges after the order is stale for a few verification reads', async () => {
+    const { result, api } = await init({
+      config: epicConfig(
+        [fakeIssue({ number: 11 }), fakeIssue({ number: 12 })],
+        { subIssues: { 1: [12, 11] }, parents: { 11: 1, 12: 1 } },
+      ),
+      intendedIssues: [11, 12],
+      prepare: (fake) => {
+        // The accepted reorder is not visible for the first two reads.
+        fake.reorderConvergenceDelay = 2;
+      },
+    });
+
+    expect(result.kind).toBe('initialized');
+    // The mutation is sent exactly once and not resent during the stale reads.
+    expect(api.reprioritized).toHaveLength(1);
+    const finalOrder = await api.listSubIssues(1, 1);
+    expect(finalOrder.items.map((ref) => ref.number)).toEqual([11, 12]);
+  });
+
+  it('fails with an actionable timeout when an accepted reorder never converges', async () => {
+    const { result, api } = await init({
+      config: epicConfig(
+        [fakeIssue({ number: 11 }), fakeIssue({ number: 12 })],
+        { subIssues: { 1: [12, 11] }, parents: { 11: 1, 12: 1 } },
+      ),
+      intendedIssues: [11, 12],
+      prepare: (fake) => {
+        // The mutation is accepted but the authoritative order never reflects
+        // it within the verification budget (the reported bug).
+        fake.reorderConvergenceDelay = 100;
+      },
+    });
+
+    expect(result.kind).toBe('failed');
+    // The accepted mutation is sent exactly once; verification never resends it.
+    expect(api.reprioritized).toHaveLength(1);
+    const message = result.kind === 'failed' ? result.messages.join(' ') : '';
+    expect(message).toContain('expected issue #12 immediately after #11');
+    expect(message).toContain('last observed order [12, 11]');
+    expect(message).toContain('priority mutation accepted: true');
+    // The frozen plan must not be persisted when verification times out.
+    expect(api.createdComments.some((c) => c.issue === 1)).toBe(false);
+  });
+
+  it('uses separate bounded budgets for mutation retry and verification polling', async () => {
+    const { result, api } = await init({
+      config: epicConfig(
+        [fakeIssue({ number: 11 }), fakeIssue({ number: 12 })],
+        { subIssues: { 1: [12, 11] }, parents: { 11: 1, 12: 1 } },
+      ),
+      intendedIssues: [11, 12],
+      prepare: (fake) => {
+        // Three transient mutation failures (within the retry budget) and two
+        // stale verification reads (within the polling budget) both resolve.
+        fake.reprioritizeFailures = 3;
+        fake.reorderConvergenceDelay = 2;
+      },
+    });
+
+    expect(result.kind).toBe('initialized');
+    const failed = api.calls.filter(
+      (call) => call.op === 'reprioritizeSubIssue:failed',
+    );
+    expect(failed).toHaveLength(3);
+    // Exactly one mutation is ultimately accepted across both budgets.
+    expect(api.reprioritized).toHaveLength(1);
+    const finalOrder = await api.listSubIssues(1, 1);
+    expect(finalOrder.items.map((ref) => ref.number)).toEqual([11, 12]);
+  });
+});

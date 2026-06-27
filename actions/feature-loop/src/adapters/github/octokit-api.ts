@@ -27,6 +27,7 @@ import type {
   ApiPage,
   ApiPullRequest,
   ApiRepository,
+  ApiSubIssueRef,
   GitHubApi,
 } from './api.js';
 
@@ -40,20 +41,6 @@ const EMPTY_PAGE: ApiPage<never> = { items: [], hasNextPage: false };
 
 interface GraphQlNumberNode {
   readonly number: number;
-}
-
-interface SubIssuesQuery {
-  readonly repository: {
-    readonly issue: {
-      readonly subIssues: {
-        readonly nodes: readonly GraphQlNumberNode[];
-        readonly pageInfo: {
-          readonly hasNextPage: boolean;
-          readonly endCursor: string | null;
-        };
-      };
-    } | null;
-  } | null;
 }
 
 interface ParentQuery {
@@ -323,27 +310,24 @@ export class OctokitGitHubApi implements GitHubApi {
   async listSubIssues(
     issueNumber: number,
     page: number,
-  ): Promise<ApiPage<ApiNumberRef>> {
-    if (page > 1) {
-      return EMPTY_PAGE;
-    }
-    const items = await this.collectGraphQl(async (after) => {
-      const result = await this.octokit.graphql<SubIssuesQuery>(
-        `query($owner:String!,$repo:String!,$number:Int!,$after:String){
-          repository(owner:$owner,name:$repo){
-            issue(number:$number){
-              subIssues(first:100,after:$after){
-                nodes{ number }
-                pageInfo{ hasNextPage endCursor }
-              }
-            }
-          }
-        }`,
-        { owner: this.owner, repo: this.repo, number: issueNumber, after },
-      );
-      return result.repository?.issue?.subIssues ?? null;
-    });
-    return { items, hasNextPage: false };
+  ): Promise<ApiPage<ApiSubIssueRef>> {
+    const { data } = await this.octokit.request(
+      'GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues',
+      {
+        owner: this.owner,
+        repo: this.repo,
+        issue_number: issueNumber,
+        per_page: PER_PAGE,
+        page,
+      },
+    );
+    return {
+      items: data.map((issue) => ({
+        number: issue.number,
+        databaseId: issue.id,
+      })),
+      hasNextPage: data.length === PER_PAGE,
+    };
   }
 
   async getParentIssueNumber(issueNumber: number): Promise<number | null> {
@@ -397,17 +381,19 @@ export class OctokitGitHubApi implements GitHubApi {
   }
 
   async reprioritizeSubIssue(
-    parentId: string,
-    subIssueId: string,
-    afterId: string | null,
+    parentNumber: number,
+    subIssueDatabaseId: number,
+    afterDatabaseId: number | null,
   ): Promise<void> {
-    await this.octokit.graphql(
-      `mutation($issueId:ID!,$subIssueId:ID!,$afterId:ID){
-        reprioritizeSubIssue(input:{issueId:$issueId,subIssueId:$subIssueId,afterId:$afterId}){
-          clientMutationId
-        }
-      }`,
-      { issueId: parentId, subIssueId, afterId },
+    await this.octokit.request(
+      'PATCH /repos/{owner}/{repo}/issues/{issue_number}/sub_issues/priority',
+      {
+        owner: this.owner,
+        repo: this.repo,
+        issue_number: parentNumber,
+        sub_issue_id: subIssueDatabaseId,
+        ...(afterDatabaseId === null ? {} : { after_id: afterDatabaseId }),
+      },
     );
   }
 

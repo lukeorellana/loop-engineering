@@ -48,6 +48,19 @@ export interface IssueIdentity {
 }
 
 /**
+ * A native sub-issue of an epic, carrying both its issue number and its REST
+ * database id. The database id is the integer identifier the authoritative REST
+ * sub-issue endpoints use to reorder a sub-issue; it is kept distinct from the
+ * issue number and from the GraphQL node id ({@link IssueIdentity.nodeId}).
+ */
+export interface NativeSubIssue {
+  /** The sub-issue issue number. */
+  readonly number: number;
+  /** The REST database id used to address reorder operations. */
+  readonly databaseId: number;
+}
+
+/**
  * Read-only repository operations. Dry-run mode uses only these.
  */
 export interface GitHubRepositoryReadPort {
@@ -95,6 +108,14 @@ export interface GitHubRepositoryReadPort {
 
   /** Ordered native GitHub sub-issue numbers for an epic. */
   getNativeSubIssueNumbers(epicNumber: number): Promise<readonly number[]>;
+
+  /**
+   * Ordered native GitHub sub-issues for an epic, read from the authoritative
+   * REST sub-issue list. Each entry carries both the issue number and the REST
+   * database id, so a reorder addresses the same authoritative surface that is
+   * read back for verification.
+   */
+  getNativeSubIssues(epicNumber: number): Promise<readonly NativeSubIssue[]>;
 
   /**
    * The stable identity (number and GraphQL node id) of an issue, or `null` when
@@ -220,12 +241,15 @@ export interface GitHubRepositoryWritePort {
 
   /**
    * Reorder a native sub-issue within the epic so that it immediately follows
-   * `afterId`, or moves to the first position when `afterId` is `null`.
+   * the sibling identified by `afterDatabaseId`, or moves to the first position
+   * when `afterDatabaseId` is `null`. The sub-issue and the sibling are
+   * addressed by their REST database ids — the same authoritative surface
+   * {@link GitHubRepositoryReadPort.getNativeSubIssues} reads back.
    */
   reprioritizeSubIssue(
     epicNumber: number,
-    subIssueId: string,
-    afterId: string | null,
+    subIssueDatabaseId: number,
+    afterDatabaseId: number | null,
   ): Promise<void>;
 
   /**
