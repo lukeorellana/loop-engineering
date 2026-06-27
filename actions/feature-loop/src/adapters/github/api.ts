@@ -49,9 +49,20 @@ export interface ApiLabel {
   readonly name: string;
 }
 
-/** A reference to an issue by number (native sub-issue, linked PR, etc.). */
+/** A reference to an issue by number (linked PR, closing reference, etc.). */
 export interface ApiNumberRef {
   readonly number: number;
+}
+
+/**
+ * A native sub-issue reference carrying both its issue number and its REST
+ * database id. The database id is the integer identifier the REST sub-issue
+ * endpoints (`sub_issues` list and `sub_issues/priority`) use to address a
+ * sub-issue; it is distinct from the issue number and the GraphQL node id.
+ */
+export interface ApiSubIssueRef {
+  readonly number: number;
+  readonly databaseId: number;
 }
 
 /** The minimal pull-request shape the adapter needs. */
@@ -123,11 +134,15 @@ export interface GitHubApi {
   /** Remove a single label from an issue. */
   removeIssueLabel(issueNumber: number, label: string): Promise<void>;
 
-  /** One page of native GitHub sub-issues, in GitHub order. */
+  /**
+   * One page of native GitHub sub-issues, in GitHub priority order, read from
+   * the authoritative REST sub-issue list. Each entry carries the issue number
+   * and the REST database id used to address reorder operations.
+   */
   listSubIssues(
     issueNumber: number,
     page: number,
-  ): Promise<ApiPage<ApiNumberRef>>;
+  ): Promise<ApiPage<ApiSubIssueRef>>;
 
   /** The native parent issue number, or `null` when there is none. */
   getParentIssueNumber(issueNumber: number): Promise<number | null>;
@@ -154,13 +169,16 @@ export interface GitHubApi {
   removeSubIssue(parentId: string, subIssueId: string): Promise<void>;
 
   /**
-   * Reorder a sub-issue within a parent so that it immediately follows
-   * `afterId`, or moves to the first position when `afterId` is `null`.
+   * Reorder a sub-issue within a parent (addressed by issue number) so that it
+   * immediately follows `afterDatabaseId`, or moves to the first position when
+   * `afterDatabaseId` is `null`. The sub-issue and the sibling are addressed by
+   * their REST database ids through the authoritative `sub_issues/priority`
+   * endpoint.
    */
   reprioritizeSubIssue(
-    parentId: string,
-    subIssueId: string,
-    afterId: string | null,
+    parentNumber: number,
+    subIssueDatabaseId: number,
+    afterDatabaseId: number | null,
   ): Promise<void>;
 
   /** A pull request, or `null` when it does not exist. */

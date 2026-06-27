@@ -70149,9 +70149,16 @@ class GitHubRepositoryAdapter {
         }
         return subIssues;
     }
-    async getNativeSubIssueNumbers(epicNumber) {
+    async getNativeSubIssues(epicNumber) {
         const refs = await this.collectAll('list native sub-issues', (page) => this.api.listSubIssues(epicNumber, page));
-        return refs.map((ref) => ref.number);
+        return refs.map((ref) => ({
+            number: ref.number,
+            databaseId: ref.databaseId,
+        }));
+    }
+    async getNativeSubIssueNumbers(epicNumber) {
+        const subIssues = await this.getNativeSubIssues(epicNumber);
+        return subIssues.map((sub) => sub.number);
     }
     async getIssueIdentity(issueNumber) {
         const nodeId = await this.run('get issue identity', () => this.api.getIssueNodeId(issueNumber));
@@ -70179,9 +70186,8 @@ class GitHubRepositoryAdapter {
         const parentId = await this.epicNodeId(epicNumber);
         await this.run('remove sub-issue', () => this.api.removeSubIssue(parentId, subIssueId));
     }
-    async reprioritizeSubIssue(epicNumber, subIssueId, afterId) {
-        const parentId = await this.epicNodeId(epicNumber);
-        await this.run('reprioritize sub-issue', () => this.api.reprioritizeSubIssue(parentId, subIssueId, afterId));
+    async reprioritizeSubIssue(epicNumber, subIssueDatabaseId, afterDatabaseId) {
+        await this.run('reprioritize sub-issue', () => this.api.reprioritizeSubIssue(epicNumber, subIssueDatabaseId, afterDatabaseId));
     }
     async upsertInitializationPlan(epicNumber, plan) {
         await this.upsertStatusComment(epicNumber, epicPlanMarker(epicNumber), buildPlanCommentBody(plan));
@@ -70552,23 +70558,20 @@ class OctokitGitHubApi {
         }
     }
     async listSubIssues(issueNumber, page) {
-        if (page > 1) {
-            return EMPTY_PAGE;
-        }
-        const items = await this.collectGraphQl(async (after) => {
-            const result = await this.octokit.graphql(`query($owner:String!,$repo:String!,$number:Int!,$after:String){
-          repository(owner:$owner,name:$repo){
-            issue(number:$number){
-              subIssues(first:100,after:$after){
-                nodes{ number }
-                pageInfo{ hasNextPage endCursor }
-              }
-            }
-          }
-        }`, { owner: this.owner, repo: this.repo, number: issueNumber, after });
-            return result.repository?.issue?.subIssues ?? null;
+        const { data } = await this.octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues', {
+            owner: this.owner,
+            repo: this.repo,
+            issue_number: issueNumber,
+            per_page: PER_PAGE,
+            page,
         });
-        return { items, hasNextPage: false };
+        return {
+            items: data.map((issue) => ({
+                number: issue.number,
+                databaseId: issue.id,
+            })),
+            hasNextPage: data.length === PER_PAGE,
+        };
     }
     async getParentIssueNumber(issueNumber) {
         const result = await this.octokit.graphql(`query($owner:String!,$repo:String!,$number:Int!){
@@ -70600,12 +70603,14 @@ class OctokitGitHubApi {
         }
       }`, { issueId: parentId, subIssueId });
     }
-    async reprioritizeSubIssue(parentId, subIssueId, afterId) {
-        await this.octokit.graphql(`mutation($issueId:ID!,$subIssueId:ID!,$afterId:ID){
-        reprioritizeSubIssue(input:{issueId:$issueId,subIssueId:$subIssueId,afterId:$afterId}){
-          clientMutationId
-        }
-      }`, { issueId: parentId, subIssueId, afterId });
+    async reprioritizeSubIssue(parentNumber, subIssueDatabaseId, afterDatabaseId) {
+        await this.octokit.request('PATCH /repos/{owner}/{repo}/issues/{issue_number}/sub_issues/priority', {
+            owner: this.owner,
+            repo: this.repo,
+            issue_number: parentNumber,
+            sub_issue_id: subIssueDatabaseId,
+            ...(afterDatabaseId === null ? {} : { after_id: afterDatabaseId }),
+        });
     }
     async getPullRequest(pullNumber) {
         let data;
@@ -72222,75 +72227,167 @@ async function waitForMembership(ctx, isSatisfied) {
     return { ok: false, messages: [reason] };
 }
 /**
- * Move `sub` so it immediately follows `after`, state-aware and incremental:
- * re-read current order before each move, skip when adjacency already holds,
- * execute the smallest required move, then re-read to verify. Transient failures
- * retry within the bounded budget; permanent failures stop immediately.
+ * Poll the authoritative native sub-issue order with bounded backoff until
+ * `isSatisfied` accepts the observed order. Each successful read is reported to
+ * `onObserve` so callers can log the observed issue-number order. The outcome
+ * distinguishes three terminal states so callers can build precise diagnostics:
+ *
+ *   - `ok`: the predicate was satisfied; the converged order is returned.
+ *   - `!ok` with `error`: a read failed permanently, or transient read failures
+ *     exhausted the budget.
+ *   - `!ok` with `error: null`: reads succeeded but the predicate never held
+ *     within the budget (a convergence timeout); `lastNative` is the last order.
  */
-async function ensureAdjacency(ctx, move) {
-    const { repository, logger, epicNumber, policy, timing } = ctx;
-    const { sub, subId, after, afterId } = move;
+async function pollNativeOrder(ctx, isSatisfied, onObserve) {
+    const { repository, epicNumber, policy, timing } = ctx;
+    let lastNative = null;
     let lastError = null;
     for (let attempt = 1; attempt <= policy.maxAttempts; attempt += 1) {
-        let native;
         try {
-            native = await repository.getNativeSubIssueNumbers(epicNumber);
+            const native = await repository.getNativeSubIssues(epicNumber);
+            lastNative = native;
+            onObserve?.(native);
+            if (isSatisfied(native)) {
+                return { ok: true, native };
+            }
+            // A successful but unsatisfied read is a convergence timeout, not a
+            // transport failure: clear any prior transient error.
+            lastError = null;
         }
         catch (error) {
             if (!(error instanceof RepositoryApiError)) {
                 throw error;
             }
             if (!error.retryable) {
-                return { ok: false, messages: [error.message] };
+                return { ok: false, lastNative, error };
             }
             lastError = error;
-            if (attempt >= policy.maxAttempts) {
-                break;
-            }
-            logger.info(`Feature Loop: reprioritize retry ${attempt + 1}/${policy.maxAttempts}`, { epic: epicNumber, issue: sub });
-            await timing.sleep(backoffDelayMs(policy, attempt, timing.random));
-            continue;
         }
-        // Adjacency may have converged asynchronously: skip the write when correct.
-        if (adjacencySatisfied(native, sub, after)) {
-            return { ok: true };
+        if (attempt >= policy.maxAttempts) {
+            break;
         }
-        // Both endpoints must be visible before a move can reference them.
-        if (!native.includes(sub) || !native.includes(after)) {
-            if (attempt >= policy.maxAttempts) {
-                break;
-            }
-            await timing.sleep(backoffDelayMs(policy, attempt, timing.random));
-            continue;
-        }
-        logger.info(`Feature Loop: reprioritizing issue #${sub} after #${after}`, {
-            epic: epicNumber,
-        });
-        try {
-            await repository.reprioritizeSubIssue(epicNumber, subId, afterId);
-        }
-        catch (error) {
-            if (!(error instanceof RepositoryApiError)) {
-                throw error;
-            }
-            if (!error.retryable) {
-                return { ok: false, messages: [error.message] };
-            }
-            lastError = error;
-            if (attempt >= policy.maxAttempts) {
-                break;
-            }
-            logger.info(`Feature Loop: reprioritize retry ${attempt + 1}/${policy.maxAttempts}`, { epic: epicNumber, issue: sub });
-            await timing.sleep(backoffDelayMs(policy, attempt, timing.random));
-            continue;
-        }
-        // The write succeeded; the next iteration re-reads to verify the move.
+        await timing.sleep(backoffDelayMs(policy, attempt, timing.random));
     }
-    const reason = lastError !== null
-        ? retryExhaustedMessage(lastError, policy)
-        : `Epic #${epicNumber} reorder of issue #${sub} after #${after} ` +
-            `did not converge within ${policy.maxAttempts} attempts.`;
-    return { ok: false, messages: [reason] };
+    return { ok: false, lastNative, error: lastError };
+}
+/** Render an observed native order as its issue-number list for logging. */
+function observedNumbers(native) {
+    return native.map((sub) => sub.number);
+}
+/**
+ * Move `sub` so it immediately follows `after`, separating mutation retry from
+ * verification polling against one authoritative REST surface:
+ *
+ *   1. read the current order and log it;
+ *   2. skip the write when adjacency already holds, or wait for both endpoints
+ *      to become visible;
+ *   3. send exactly one priority mutation, retrying only when that mutation
+ *      throws a retryable error (permanent errors stop immediately);
+ *   4. after the mutation is accepted, poll the order — without resending the
+ *      mutation — until adjacency converges, logging each observed order.
+ *
+ * A convergence timeout reports the expected adjacency, the last observed order,
+ * and that the mutation was accepted, so the failure is actionable.
+ */
+async function ensureAdjacency(ctx, move) {
+    const { logger, epicNumber, policy, timing, repository } = ctx;
+    const { sub, after } = move;
+    // 1-2. Read the current order; skip when already adjacent; otherwise wait for
+    // both endpoints to be visible before attempting a move.
+    const ready = await pollNativeOrder(ctx, (native) => {
+        const numbers = observedNumbers(native);
+        return (adjacencySatisfied(numbers, sub, after) ||
+            (numbers.includes(sub) && numbers.includes(after)));
+    }, (native) => logger.info('Feature Loop: observed native order before reorder', {
+        epic: epicNumber,
+        sub,
+        after,
+        order: observedNumbers(native),
+    }));
+    if (!ready.ok) {
+        return {
+            ok: false,
+            messages: [readFailureMessage(ctx, ready, sub, after)],
+        };
+    }
+    const current = observedNumbers(ready.native);
+    if (adjacencySatisfied(current, sub, after)) {
+        // Adjacency already holds (possibly converged asynchronously): no write.
+        return { ok: true };
+    }
+    const subId = ready.native.find((entry) => entry.number === sub)?.databaseId;
+    const afterId = ready.native.find((entry) => entry.number === after)?.databaseId;
+    if (subId === undefined || afterId === undefined) {
+        // Unreachable: the read predicate guarantees both endpoints are visible.
+        return {
+            ok: false,
+            messages: [
+                `Epic #${epicNumber} reorder of issue #${sub} after #${after} could ` +
+                    `not resolve sub-issue database ids from the native order ` +
+                    `[${current.join(', ')}].`,
+            ],
+        };
+    }
+    // 3. Send exactly one priority mutation, retrying only retryable failures.
+    logger.info(`Feature Loop: reprioritizing issue #${sub} after #${after}`, {
+        epic: epicNumber,
+    });
+    const mutation = await retryTransient(() => repository.reprioritizeSubIssue(epicNumber, subId, afterId), policy, timing, (nextAttempt) => logger.info(`Feature Loop: reprioritize retry ${nextAttempt}/${policy.maxAttempts}`, { epic: epicNumber, issue: sub }));
+    if (!mutation.ok) {
+        const message = mutation.error.retryable
+            ? retryExhaustedMessage(mutation.error, policy)
+            : mutation.error.message;
+        return { ok: false, messages: [message] };
+    }
+    // 4. Poll for convergence without resending the mutation.
+    let lastObserved = current;
+    const verified = await pollNativeOrder(ctx, (native) => adjacencySatisfied(observedNumbers(native), sub, after), (native) => {
+        lastObserved = observedNumbers(native);
+        logger.info('Feature Loop: observed native order during verification', {
+            epic: epicNumber,
+            sub,
+            after,
+            order: lastObserved,
+        });
+    });
+    if (verified.ok) {
+        return { ok: true };
+    }
+    if (verified.error !== null) {
+        const message = verified.error.retryable
+            ? retryExhaustedMessage(verified.error, policy)
+            : verified.error.message;
+        return { ok: false, messages: [message] };
+    }
+    const observed = verified.lastNative
+        ? observedNumbers(verified.lastNative)
+        : lastObserved;
+    return {
+        ok: false,
+        messages: [
+            `Epic #${epicNumber} reorder did not converge within ` +
+                `${policy.maxAttempts} verification attempts: expected issue #${sub} ` +
+                `immediately after #${after}; last observed order [${observed.join(', ')}]; priority mutation accepted: true.`,
+        ],
+    };
+}
+/**
+ * Build a safe message for a failed pre-move read: an exhausted/permanent read
+ * error, or a visibility timeout where both endpoints never became visible.
+ */
+function readFailureMessage(ctx, outcome, sub, after) {
+    if (outcome.error !== null) {
+        return outcome.error.retryable
+            ? retryExhaustedMessage(outcome.error, ctx.policy)
+            : outcome.error.message;
+    }
+    const observed = outcome.lastNative
+        ? observedNumbers(outcome.lastNative)
+        : [];
+    return (`Epic #${ctx.epicNumber} reorder of issue #${sub} after #${after} could ` +
+        `not begin: both sub-issues were not visible within ` +
+        `${ctx.policy.maxAttempts} attempts; last observed order ` +
+        `[${observed.join(', ')}]; priority mutation accepted: false.`);
 }
 /**
  * Run the idempotent epic initialization transaction.
@@ -72492,23 +72589,13 @@ async function initializeEpic(input) {
             epic: epicNumber,
         });
     }
-    // Reorder native sub-issues to match the intended order. Each move is
-    // state-aware and incremental: re-read current order, skip already-satisfied
-    // adjacency, perform the smallest move, then verify before continuing.
+    // Reorder native sub-issues to match the intended order. Each move reads the
+    // authoritative order, skips already-satisfied adjacency, sends one priority
+    // mutation, then polls the same surface until the move is verified.
     for (let index = 1; index < intendedIssues.length; index += 1) {
         const sub = intendedIssues[index];
         const after = intendedIssues[index - 1];
-        const subId = nodeIds.get(sub);
-        const afterId = nodeIds.get(after);
-        if (subId === undefined || afterId === undefined) {
-            continue;
-        }
-        const moved = await ensureAdjacency(hierarchy, {
-            sub,
-            subId,
-            after,
-            afterId,
-        });
+        const moved = await ensureAdjacency(hierarchy, { sub, after });
         if (!moved.ok) {
             return {
                 kind: 'failed',
@@ -72821,6 +72908,7 @@ function readOnlyRepository(repository) {
         getEpic: (epicNumber) => repository.getEpic(epicNumber),
         getEpicWithSubIssues: (epicNumber, numbers) => repository.getEpicWithSubIssues(epicNumber, numbers),
         getNativeSubIssueNumbers: (epicNumber) => repository.getNativeSubIssueNumbers(epicNumber),
+        getNativeSubIssues: (epicNumber) => repository.getNativeSubIssues(epicNumber),
         getIssueIdentity: (issueNumber) => repository.getIssueIdentity(issueNumber),
         getInitializationPlan: (epicNumber) => repository.getInitializationPlan(epicNumber),
         getParentEpicNumber: (issueNumber) => repository.getParentEpicNumber(issueNumber),
