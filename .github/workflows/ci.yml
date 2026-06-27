@@ -9,14 +9,17 @@ on:
 permissions:
   contents: read
 
-defaults:
-  run:
-    working-directory: actions/feature-loop
-
 jobs:
   build:
-    name: Build and validate
+    name: Build and validate (${{ matrix.action }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        action: [feature-loop, ci-triage]
+    defaults:
+      run:
+        working-directory: actions/${{ matrix.action }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -26,7 +29,7 @@ jobs:
         with:
           node-version: 20
           cache: npm
-          cache-dependency-path: actions/feature-loop/package-lock.json
+          cache-dependency-path: actions/${{ matrix.action }}/package-lock.json
 
       - name: Install dependencies
         run: npm ci
@@ -49,7 +52,7 @@ jobs:
       - name: Verify committed bundle is up to date
         run: |
           if [ -n "$(git status --porcelain dist)" ]; then
-            echo "::error::dist/ is out of date. Run 'npm run build' in actions/feature-loop and commit the result."
+            echo "::error::dist/ is out of date. Run 'npm run build' in actions/${{ matrix.action }} and commit the result."
             git --no-pager diff -- dist
             exit 1
           fi
@@ -63,3 +66,12 @@ jobs:
 
       - name: Run Feature Loop action
         uses: ./actions/feature-loop
+
+      # CI Triage requires an agent-token and is run in dry-run mode so the
+      # smoke test exercises the packaged action without any Agent Tasks writes.
+      - name: Run CI Triage action (dry run)
+        uses: ./actions/ci-triage
+        with:
+          github-token: ${{ github.token }}
+          agent-token: ${{ github.token }}
+          dry-run: 'true'
