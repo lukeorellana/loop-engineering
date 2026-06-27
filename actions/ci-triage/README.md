@@ -4,21 +4,21 @@ A GitHub Action that triages a failed CI workflow run and hands it to the
 Copilot Agent Tasks API, opening or reusing a fix pull request. The action keeps
 a human in the loop: a person reviews and merges every fix pull request.
 
-> **Status:** This is the initial package. It defines the stable public
-> contract — every v1 input, output, outcome, and reason code — validates
-> inputs end to end, resolves the failed run's delivery target, and builds the
-> hardened Copilot investigation prompt. Agent Tasks calls are intentionally
-> **not implemented yet**, so neither the resolver nor the prompt builder is
-> wired into the entry point: with valid inputs the action still reports the
-> `operational-error` outcome with the `orchestration-not-implemented` reason
-> code, and a dry run reports a successful `dry-run` preview without performing
-> any Agent Tasks writes. The reusable contract lives under `src/domain/`
-> (outcomes, pull-request modes, reason codes, the pure target-resolution
-> decisions, and the pure triage-prompt builder) and is re-exported from
-> `src/contracts.ts`; the failed-run and pull-request target resolver
-> (`resolveTriageTarget`) lives under `src/adapters/github/` over a narrow,
-> mockable GitHub API boundary; the input/output mapping and composition root
-> live under `src/action/`, and the entry point is `src/main.ts`.
+> **Status:** This package defines the stable public contract — every v1 input,
+> output, outcome, and reason code — validates inputs end to end, resolves the
+> failed run's delivery target, builds the hardened Copilot investigation prompt,
+> and composes them into the executable action: it starts (or, in a dry run,
+> previews) a GitHub Copilot Agent Tasks task through a dedicated provider
+> boundary. The reusable contract lives under `src/domain/` (outcomes,
+> pull-request modes, reason codes, the pure target-resolution decisions, and the
+> pure triage-prompt builder) and is re-exported from `src/contracts.ts`; the
+> failed-run and pull-request target resolver (`resolveTriageTarget`) lives under
+> `src/adapters/github/` over a narrow, mockable GitHub API boundary; the Agent
+> Tasks provider (`GitHubAgentTasksProvider`) lives under
+> `src/adapters/agent-tasks/` over a narrow, mockable transport boundary that
+> isolates the preview endpoint path and the pinned API version; the
+> input/output mapping and composition root live under `src/action/`, and the
+> entry point is `src/main.ts`.
 
 The action is packaged with the same Node 20 TypeScript model as
 [`feature-loop`](../feature-loop): TypeScript sources under `src/`, bundled with
@@ -66,17 +66,47 @@ as empty strings.
 ### Reason codes
 
 The stable reason-code vocabulary is defined in
-[`src/domain/contract.ts`](src/domain/contract.ts). The action entry point still
-emits only `invalid-input`, `orchestration-not-implemented`, and
-`dry-run-preview`; the target resolver
+[`src/domain/contract.ts`](src/domain/contract.ts). The action entry point emits
+`invalid-input` and `dry-run-preview` from input handling and `task-started`
+from a successful start; the target resolver
 ([`src/adapters/github/resolve-target.ts`](src/adapters/github/resolve-target.ts))
-additionally produces the failed-run and pull-request codes
-(`not-a-workflow-run-event`, `workflow-run-not-completed`,
-`workflow-run-not-failed`, `unsupported-triggering-event`,
-`pull-request-not-found`, `pull-request-ambiguous`, `pull-request-closed`,
-`fork-pull-request`, `existing-mode-requires-pull-request`,
-`target-branch-not-found`, and `stale-workflow-run`). The remaining codes reserve
-stable vocabulary for later versions.
+produces the failed-run and pull-request codes (`not-a-workflow-run-event`,
+`workflow-run-not-completed`, `workflow-run-not-failed`,
+`unsupported-triggering-event`, `pull-request-not-found`,
+`pull-request-ambiguous`, `pull-request-closed`, `fork-pull-request`,
+`existing-mode-requires-pull-request`, `target-branch-not-found`, and
+`stale-workflow-run`); and the Agent Tasks provider
+([`src/adapters/agent-tasks/`](src/adapters/agent-tasks/)) classifies every API
+failure into one of `agent-auth-failed`, `agent-forbidden`, `agent-unsupported`,
+`agent-invalid-request` (including an invalid model, with no silent fallback),
+`agent-rate-limited`, `agent-transient`, or `agent-unexpected-response`. The
+credential, permission, plan, and request-validation failures fail closed as
+`configuration-error`; rate-limit, transient, and malformed-response failures are
+`operational-error`.
+
+## Agent Tasks provider
+
+The Copilot Agent Tasks provider lives under
+[`src/adapters/agent-tasks/`](src/adapters/agent-tasks/). It is a provider
+boundary around the public-preview Agent Tasks API: the triage orchestration
+speaks only the clean `AgentTasksProvider` port (a resolved target, a model
+decision, and a prompt in; a started task or a stable failure reason out), so the
+preview API's request and response types never leak into the core logic.
+
+- **Credentials.** The repository token (`github-token`) drives the read-only
+  workflow-run and pull-request reads; the dedicated `agent-token` drives the
+  Agent Tasks provider. Both are registered as secrets so the runner masks them,
+  and the provider never logs authorization headers, raw responses (which may
+  echo prompt content), or the full generated prompt.
+- **Request shape.** In existing-PR mode the request sends both `base_ref` and
+  `head_ref` and does not request a new pull request; in new-PR mode it sends
+  only `base_ref` and `create_pull_request: true`. A non-empty `model` is sent
+  unchanged; an empty model is omitted entirely (no allowlist, no retry without
+  the model).
+- **Pinned endpoint.** The preview path and the documented
+  `X-GitHub-Api-Version` header live only in
+  [`src/adapters/agent-tasks/endpoint.ts`](src/adapters/agent-tasks/endpoint.ts),
+  so the action can be repointed in one place if the preview API evolves.
 
 ## Triage prompt
 

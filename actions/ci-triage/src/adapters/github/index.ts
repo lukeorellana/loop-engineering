@@ -3,4 +3,5 @@
  * target resolver built on it.
  */
 export * from './api.js';
+export * from './octokit-api.js';
 export * from './resolve-target.js';

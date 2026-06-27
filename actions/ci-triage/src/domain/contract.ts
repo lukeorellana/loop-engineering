@@ -50,13 +50,11 @@ export type PullRequestMode = (typeof PULL_REQUEST_MODES)[number];
 /**
  * Stable, machine-readable reason codes explaining a {@link TriageOutcome}.
  *
- * These codes form part of the public contract and are safe to branch on. Only
- * a subset is emitted by the current entry point; the remainder reserve stable
- * vocabulary for the resolver and Agent Tasks behavior added in later versions.
+ * These codes form part of the public contract and are safe to branch on. They
+ * are emitted by input validation, the failed-run resolver, and the Agent Tasks
+ * provider.
  *
  * - `invalid-input`: one or more inputs failed validation (configuration-error).
- * - `orchestration-not-implemented`: inputs were valid but triage orchestration
- *   is not yet implemented in this version (operational-error).
  * - `dry-run-preview`: a dry run reported what would happen without writes
  *   (dry-run).
  * - `task-started`: a new Agent Tasks task was started (started).
@@ -69,8 +67,26 @@ export type PullRequestMode = (typeof PULL_REQUEST_MODES)[number];
  *   (needs-human).
  * - `pull-request-not-found`: no fix pull request could be resolved for the
  *   failed run (needs-human).
- * - `agent-tasks-unavailable`: the Agent Tasks API could not be reached or
- *   rejected the request (operational-error).
+ *
+ * Agent Tasks provider reason codes (the Copilot Agent Tasks API boundary).
+ * Each is a stable classification of an API failure; the credential/permission
+ * and request-validation failures fail closed as configuration errors, while
+ * the rate-limit, transient, and malformed-response failures are operational:
+ *
+ * - `agent-auth-failed`: the `agent-token` was rejected as unauthenticated
+ *   (configuration-error).
+ * - `agent-forbidden`: the credential is authenticated but not authorized, or is
+ *   missing the Agent Tasks permission (configuration-error).
+ * - `agent-unsupported`: the credential type, plan, or preview API is
+ *   unavailable for Agent Tasks (configuration-error).
+ * - `agent-invalid-request`: the request was rejected as invalid, including an
+ *   invalid model override, with no silent fallback (configuration-error).
+ * - `agent-rate-limited`: the Agent Tasks API rate-limited the request
+ *   (operational-error).
+ * - `agent-transient`: a transient server or network failure occurred
+ *   (operational-error).
+ * - `agent-unexpected-response`: the Agent Tasks API returned an unexpected
+ *   response shape (operational-error).
  *
  * Target-resolution reason codes (the failed-run and delivery-target resolver):
  *
@@ -97,7 +113,6 @@ export type PullRequestMode = (typeof PULL_REQUEST_MODES)[number];
  */
 export const TRIAGE_REASON_CODES = [
   'invalid-input',
-  'orchestration-not-implemented',
   'dry-run-preview',
   'task-started',
   'task-already-exists',
@@ -105,7 +120,13 @@ export const TRIAGE_REASON_CODES = [
   'unsupported-event',
   'ambiguous-pull-request',
   'pull-request-not-found',
-  'agent-tasks-unavailable',
+  'agent-auth-failed',
+  'agent-forbidden',
+  'agent-unsupported',
+  'agent-invalid-request',
+  'agent-rate-limited',
+  'agent-transient',
+  'agent-unexpected-response',
   'not-a-workflow-run-event',
   'workflow-run-not-completed',
   'workflow-run-not-failed',

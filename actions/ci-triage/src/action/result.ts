@@ -37,6 +37,26 @@ export interface TriageResult {
   readonly targetHeadRef?: string;
   /** The reused existing fix pull-request number, when one applied. */
   readonly existingPrNumber?: number;
+  /**
+   * Summary-only fields below carry safe operational metadata for the step
+   * summary. They are never published as outputs and never include secrets,
+   * prompt text, or untrusted context.
+   */
+  /** The failed workflow's name, when resolved. */
+  readonly workflowName?: string;
+  /** The failed workflow run's HTML URL, when resolved. */
+  readonly workflowRunUrl?: string;
+  /**
+   * Whether a model override was supplied. This records only that an override
+   * was requested, never that GitHub accepted it.
+   */
+  readonly modelOverrideProvided?: boolean;
+  /** Whether optional history was included when building the prompt. */
+  readonly historyIncluded?: boolean;
+  /** Whether optional additional context was included when building the prompt. */
+  readonly additionalContextIncluded?: boolean;
+  /** Whether any prompt section was truncated to fit its size limit. */
+  readonly promptTruncated?: boolean;
   /** Sanitized, human-readable diagnostics safe to surface anywhere. */
   readonly details: readonly string[];
 }

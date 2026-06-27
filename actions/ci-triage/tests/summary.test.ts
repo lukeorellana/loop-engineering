@@ -33,7 +33,7 @@ describe('buildStepSummary', () => {
     const result: TriageResult = {
       // Cast to bypass TS so we can test the unknown-outcome fallback.
       outcome: 'unknown-future-outcome' as TriageResult['outcome'],
-      reasonCode: 'orchestration-not-implemented',
+      reasonCode: 'task-started',
       dryRun: false,
       details: [],
     };
@@ -44,7 +44,7 @@ describe('buildStepSummary', () => {
   it('omits optional rows when the fields are undefined', () => {
     const result: TriageResult = {
       outcome: 'operational-error',
-      reasonCode: 'orchestration-not-implemented',
+      reasonCode: 'task-started',
       dryRun: false,
       details: [],
     };
@@ -77,7 +77,7 @@ describe('buildStepSummary', () => {
       details: [],
     };
     const summary = buildStepSummary(result);
-    expect(summary).toContain('Resolved PR mode');
+    expect(summary).toContain('Resolved delivery mode');
     expect(summary).toContain('`auto`');
   });
 
@@ -153,11 +153,78 @@ describe('buildStepSummary', () => {
   it('omits the details section when details array is empty', () => {
     const result: TriageResult = {
       outcome: 'operational-error',
-      reasonCode: 'orchestration-not-implemented',
+      reasonCode: 'task-started',
       dryRun: false,
       details: [],
     };
     const summary = buildStepSummary(result);
     expect(summary).not.toContain('### Details');
+  });
+});
+
+describe('buildStepSummary — safe operational metadata', () => {
+  it('links the failed run and the started task', () => {
+    const result: TriageResult = {
+      outcome: 'started',
+      reasonCode: 'task-started',
+      dryRun: false,
+      workflowName: 'CI',
+      workflowRunId: 4242,
+      workflowRunUrl: 'https://github.com/acme/app/actions/runs/4242',
+      workflowRunAttempt: 2,
+      taskId: 'task-9',
+      taskUrl: 'https://github.com/acme/app/agents/task-9',
+      details: [],
+    };
+    const summary = buildStepSummary(result);
+    expect(summary).toContain('Failed workflow');
+    expect(summary).toContain('CI');
+    expect(summary).toContain(
+      '[#4242](https://github.com/acme/app/actions/runs/4242)',
+    );
+    expect(summary).toContain('Run attempt');
+    expect(summary).toContain(
+      '[task-9](https://github.com/acme/app/agents/task-9)',
+    );
+  });
+
+  it('renders the resolved delivery mode and target refs', () => {
+    const result: TriageResult = {
+      outcome: 'dry-run',
+      reasonCode: 'dry-run-preview',
+      dryRun: true,
+      resolvedMode: 'new',
+      targetBaseRef: 'main',
+      targetHeadRef: 'ci-triage/main',
+      details: [],
+    };
+    const summary = buildStepSummary(result);
+    expect(summary).toContain('Resolved delivery mode');
+    expect(summary).toContain('`new`');
+    expect(summary).toContain('Target base ref');
+    expect(summary).toContain('`main`');
+    expect(summary).toContain('Target head ref');
+    expect(summary).toContain('`ci-triage/main`');
+  });
+
+  it('reports model-override and history/context flags without claiming validity', () => {
+    const result: TriageResult = {
+      outcome: 'started',
+      reasonCode: 'task-started',
+      dryRun: false,
+      modelOverrideProvided: true,
+      historyIncluded: true,
+      additionalContextIncluded: false,
+      promptTruncated: true,
+      details: [],
+    };
+    const summary = buildStepSummary(result);
+    expect(summary).toContain('Model override supplied');
+    expect(summary).toMatch(/Model override supplied \| yes/);
+    expect(summary).toMatch(/History included \| yes/);
+    expect(summary).toMatch(/Additional context included \| no/);
+    expect(summary).toMatch(/Prompt truncated \| yes/);
+    // It never asserts the model itself is valid.
+    expect(summary).not.toContain('valid');
   });
 });
