@@ -42,8 +42,6 @@ A new repository can adopt CI Triage from these guides and the
   outcome and reason.
 - [Integration validation](docs/integration-validation.md) — the disposable
   end-to-end validation plan.
-- [CallAgent migration](docs/migration-callagent.md) — reversible migration from
-  an inline Agent Tasks workflow, with rollback.
 - [Release & versioning](docs/release.md) — the repository-wide release model
   shared with Feature Loop.
 
