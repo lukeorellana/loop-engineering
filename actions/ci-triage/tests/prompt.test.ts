@@ -5,6 +5,7 @@ import {
   TRUNCATION_MARKER,
   buildTriagePrompt,
   computeTaskFingerprint,
+  extractTaskFingerprint,
   summarizeTriagePrompt,
   type TriagePromptContext,
 } from '../src/domain/index.js';
@@ -277,8 +278,6 @@ describe('summarizeTriagePrompt', () => {
     expect(summary.length).toBe(prompt.text.length);
   });
 });
-
-import { extractTaskFingerprint } from '../src/domain/index.js';
 
 describe('task fingerprint identity', () => {
   it('is stable for the same run attempt and differs for a new attempt', () => {

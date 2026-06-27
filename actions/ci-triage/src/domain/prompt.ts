@@ -213,8 +213,13 @@ export function computeTaskFingerprint(context: TriagePromptContext): string {
   return `ci-triage-${fnv1aHex(identity)}`;
 }
 
-const FINGERPRINT_MARKER_PATTERN =
-  /<!--\s*ci-triage-fingerprint:\s*(ci-triage-[0-9a-f]+)\s*-->/;
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+const FINGERPRINT_MARKER_PATTERN = new RegExp(
+  `<!--\\s*${escapeRegex(FINGERPRINT_MARKER_PREFIX)}\\s*(ci-triage-[0-9a-f]+)\\s*-->`,
+);
 
 /**
  * Read the hidden fingerprint marker back out of a prompt body, or `null` when
@@ -442,7 +447,7 @@ export function buildTriagePrompt(context: TriagePromptContext): TriagePrompt {
     );
   }
 
-  const fingerprintLine = `<!-- ci-triage-fingerprint: ${fingerprint} -->`;
+  const fingerprintLine = `<!-- ${FINGERPRINT_MARKER_PREFIX} ${fingerprint} -->`;
   const body = sections.join('\n\n');
 
   // Bound the whole prompt last, reserving room for the fingerprint line so the

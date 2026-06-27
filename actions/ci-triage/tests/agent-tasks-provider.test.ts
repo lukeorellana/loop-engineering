@@ -11,6 +11,11 @@ import {
   sanitizeAgentTasksError,
 } from '../src/adapters/agent-tasks/errors.js';
 import {
+  mapTaskList,
+  mapTaskListItem,
+  PREVIOUS_APPROACH_SUMMARY_MAX,
+} from '../src/adapters/agent-tasks/api.js';
+import {
   FakeAgentTasksTransport,
   FakeHttpError,
 } from './helpers/fake-agent-tasks.js';
@@ -239,12 +244,6 @@ describe('sanitizeAgentTasksError — redaction', () => {
     expect(sanitizeAgentTasksError(original)).toBe(original);
   });
 });
-
-import {
-  mapTaskList,
-  mapTaskListItem,
-  PREVIOUS_APPROACH_SUMMARY_MAX,
-} from '../src/adapters/agent-tasks/api.js';
 
 const FP = 'ci-triage-abcd1234';
 const OTHER_FP = 'ci-triage-99998888';

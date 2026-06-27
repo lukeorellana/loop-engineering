@@ -128,6 +128,7 @@ describe('idempotency — exact duplicate', () => {
     expect(result.reasonCode).toBe('agent-task-already-exists');
     expect(result.taskId).toBe('dup-task');
     expect(provider.inputs).toHaveLength(0);
+    expect(provider.listRecentCalls).toBe(0);
   });
 });
 

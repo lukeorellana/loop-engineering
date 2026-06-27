@@ -60724,7 +60724,10 @@ function computeTaskFingerprint(context) {
     ].join('\u0000');
     return `ci-triage-${fnv1aHex(identity)}`;
 }
-const FINGERPRINT_MARKER_PATTERN = /<!--\s*ci-triage-fingerprint:\s*(ci-triage-[0-9a-f]+)\s*-->/;
+function escapeRegex(value) {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+const FINGERPRINT_MARKER_PATTERN = new RegExp(`<!--\\s*${escapeRegex(FINGERPRINT_MARKER_PREFIX)}\\s*(ci-triage-[0-9a-f]+)\\s*-->`);
 /**
  * Read the hidden fingerprint marker back out of a prompt body, or `null` when
  * no well-formed marker is present.
@@ -60886,7 +60889,7 @@ function buildTriagePrompt(context) {
         }
         sections.push(['## Additional context (untrusted evidence)', bounded.text].join('\n'));
     }
-    const fingerprintLine = `<!-- ci-triage-fingerprint: ${fingerprint} -->`;
+    const fingerprintLine = `<!-- ${FINGERPRINT_MARKER_PREFIX} ${fingerprint} -->`;
     const body = sections.join('\n\n');
     // Bound the whole prompt last, reserving room for the fingerprint line so the
     // machine-readable marker survives final truncation.
@@ -62363,6 +62366,41 @@ async function orchestrate(env, inputs) {
         };
     }
     const provider = env.buildAgentTasksProvider(inputs.agentToken);
+    const dedupFields = {
+        ...metadataFields(resolution.metadata),
+        ...targetFields(resolution),
+        ...promptFlags(inputs, false),
+    };
+    // Best-effort idempotency: the public-preview API exposes no atomic
+    // idempotency key, so reprocessing the same run attempt is deduplicated by
+    // matching the fingerprint marker against recent Agent Tasks before creating.
+    const existing = await provider.findTaskByFingerprint(fingerprint);
+    if (!existing.ok) {
+        // Deduplication itself could not be performed reliably; fail closed rather
+        // than risk creating a duplicate task for this run attempt.
+        return {
+            outcome: outcomeForAgentFailure(existing.reason),
+            reasonCode: existing.reason,
+            dryRun: false,
+            ...dedupFields,
+            details: [
+                `Could not verify whether a triage task already exists, so no new task was started: ${existing.message}`,
+            ],
+        };
+    }
+    if (existing.task !== null) {
+        return {
+            outcome: 'duplicate',
+            reasonCode: 'agent-task-already-exists',
+            dryRun: false,
+            taskId: existing.task.taskId,
+            taskUrl: existing.task.taskUrl,
+            ...dedupFields,
+            details: [
+                'A triage task already exists for this exact failed run attempt; no new task was started.',
+            ],
+        };
+    }
     // Best-effort previous-attempt history, only when enabled. A failure to gather
     // optional history never blocks a new task.
     let history;
@@ -62394,38 +62432,6 @@ async function orchestrate(env, inputs) {
             : {}),
     };
     const extraDetails = historyDetails(history);
-    // Best-effort idempotency: the public-preview API exposes no atomic
-    // idempotency key, so reprocessing the same run attempt is deduplicated by
-    // matching the fingerprint marker against recent Agent Tasks before creating.
-    const existing = await provider.findTaskByFingerprint(prompt.fingerprint);
-    if (!existing.ok) {
-        // Deduplication itself could not be performed reliably; fail closed rather
-        // than risk creating a duplicate task for this run attempt.
-        return {
-            outcome: outcomeForAgentFailure(existing.reason),
-            reasonCode: existing.reason,
-            dryRun: false,
-            ...resolvedFields,
-            details: [
-                `Could not verify whether a triage task already exists, so no new task was started: ${existing.message}`,
-                ...extraDetails,
-            ],
-        };
-    }
-    if (existing.task !== null) {
-        return {
-            outcome: 'duplicate',
-            reasonCode: 'agent-task-already-exists',
-            dryRun: false,
-            taskId: existing.task.taskId,
-            taskUrl: existing.task.taskUrl,
-            ...resolvedFields,
-            details: [
-                'A triage task already exists for this exact failed run attempt; no new task was started.',
-                ...extraDetails,
-            ],
-        };
-    }
     const started = await provider.startTask(startTaskInput(resolution, inputs, prompt.text));
     if (started.ok) {
         return {
@@ -62441,7 +62447,7 @@ async function orchestrate(env, inputs) {
     // An uncertain create result (timeout or undecodable response) may have
     // created the task anyway. Search again for the fingerprint to reconcile.
     if (isUncertainCreateFailure(started.reason)) {
-        const reconciled = await provider.findTaskByFingerprint(prompt.fingerprint);
+        const reconciled = await provider.findTaskByFingerprint(fingerprint);
         if (reconciled.ok && reconciled.task !== null) {
             return {
                 outcome: 'started',
