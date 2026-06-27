@@ -1,0 +1,33 @@
+{
+  "name": "ci-triage-action",
+  "version": "0.1.0",
+  "private": true,
+  "description": "GitHub Action that triages a failed CI workflow run and hands it to the Copilot Agent Tasks API.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "format:check": "prettier --check .",
+    "format:write": "prettier --write .",
+    "test": "vitest run",
+    "build": "ncc build src/index.ts -o dist --source-map --license licenses.txt",
+    "all": "npm run typecheck && npm run lint && npm run format:check && npm run test && npm run build"
+  },
+  "dependencies": {
+    "@actions/core": "^1.11.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.29.0",
+    "@types/node": "^22.15.32",
+    "@vercel/ncc": "^0.38.3",
+    "eslint": "^9.29.0",
+    "eslint-config-prettier": "^10.1.5",
+    "prettier": "^3.5.3",
+    "typescript": "^5.8.3",
+    "typescript-eslint": "^8.34.1",
+    "vitest": "^3.2.6"
+  }
+}

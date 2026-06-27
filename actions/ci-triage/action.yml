@@ -1,0 +1,84 @@
+name: 'CI Triage'
+description: 'Triage a failed CI workflow run and hand it to the Copilot Agent Tasks API, opening or reusing a fix pull request.'
+author: 'lukeorellana'
+branding:
+  icon: 'alert-triangle'
+  color: 'orange'
+inputs:
+  github-token:
+    description: >-
+      Token used for repository, workflow-run, branch, commit, and
+      pull-request reads. The workflow-provided GITHUB_TOKEN is sufficient for
+      these read operations.
+    required: true
+    default: ${{ github.token }}
+  agent-token:
+    description: >-
+      Credential used for Copilot Agent Tasks reads and writes. Required; there
+      is no default because the workflow token cannot start Agent Tasks.
+    required: true
+  model:
+    description: >-
+      Optional model identifier passed unchanged to the Agent Tasks API. When
+      empty, no model override is sent and the API selects its default. The
+      action keeps no model-name allowlist.
+    required: false
+    default: ''
+  pull-request-mode:
+    description: >-
+      How the fix pull request is resolved: "auto" (reuse an existing fix PR
+      when present, otherwise open a new one), "existing" (only reuse), or
+      "new" (always open a new one).
+    required: false
+    default: 'auto'
+  prompt-instructions:
+    description: >-
+      Optional trusted repository-owner instructions appended to the triage
+      prompt. Treated as trusted because only repository owners can set workflow
+      inputs.
+    required: false
+    default: ''
+  additional-context:
+    description: >-
+      Optional bounded operational evidence (for example, log excerpts) added to
+      the triage prompt. Treated as untrusted data and never as instructions.
+    required: false
+    default: ''
+  include-history:
+    description: >-
+      When true, include prior attempts and related history when building the
+      triage prompt.
+    required: false
+    default: 'true'
+  dry-run:
+    description: >-
+      When true, evaluate the failed run and report what would happen without
+      performing any Agent Tasks writes or pull-request mutations.
+    required: false
+    default: 'false'
+outputs:
+  outcome:
+    description: >-
+      The coarse-grained result: started, duplicate, ignored, needs-human,
+      dry-run, configuration-error, or operational-error.
+  reason:
+    description: 'A stable, machine-readable reason code for the outcome.'
+  task-id:
+    description: 'The Agent Tasks task identifier, when a task was started or reused.'
+  task-url:
+    description: 'The Agent Tasks task URL, when a task was started or reused.'
+  workflow-run-id:
+    description: 'The failed workflow run id the triage acted on, when resolved.'
+  workflow-run-attempt:
+    description: 'The failed workflow run attempt the triage acted on, when resolved.'
+  resolved-mode:
+    description: 'The pull-request mode actually applied: auto, existing, or new.'
+  target-base-ref:
+    description: 'The base ref the fix pull request targets, when resolved.'
+  target-head-ref:
+    description: 'The head ref of the fix pull request, when resolved.'
+  existing-pr-number:
+    description: 'The reused existing fix pull-request number, when one applied.'
+runs:
+  using: 'node20'
+  main: 'dist/index.js'
