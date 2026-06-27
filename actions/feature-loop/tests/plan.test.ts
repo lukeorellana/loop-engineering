@@ -4,7 +4,6 @@ import {
   buildExecutionPlan,
   computePlanHash,
   decodeExecutionPlan,
-  detectPlanDrift,
   PLAN_VERSION,
   validatePlannedIssues,
 } from '../src/domain/plan.js';
@@ -89,24 +88,5 @@ describe('buildExecutionPlan / decodeExecutionPlan', () => {
     expect(
       decodeExecutionPlan({ version: 1, epic: 1, issues: ['x'] }),
     ).toBeNull();
-  });
-});
-
-describe('detectPlanDrift', () => {
-  it('reports no drift when native order matches the plan', () => {
-    const plan = buildExecutionPlan(1, [2, 3, 4]);
-    expect(detectPlanDrift(plan, [2, 3, 4])).toEqual({ drifted: false });
-  });
-
-  it('reports drift when the native order differs', () => {
-    const plan = buildExecutionPlan(1, [2, 3, 4]);
-    const result = detectPlanDrift(plan, [2, 4, 3]);
-    expect(result.drifted).toBe(true);
-    expect(result.drifted === true && result.message).toContain('#1');
-  });
-
-  it('reports drift when native membership differs', () => {
-    const plan = buildExecutionPlan(1, [2, 3, 4]);
-    expect(detectPlanDrift(plan, [2, 3]).drifted).toBe(true);
   });
 });

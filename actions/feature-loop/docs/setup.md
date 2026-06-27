@@ -186,12 +186,15 @@ to the job summary with `outcome: dry-run`.
 ## 10. Start the loop
 
 Run the workflow again with **dry-run** `false` (or leave it unset). The first
-manual run **initializes** the epic: it resolves the intended ordered sub-issue
-list, repairs native parent/sub-issue relationships, reorders native sub-issues
-to match the authored order, normalizes canonical state labels, verifies the
-resulting hierarchy, and persists a **frozen execution plan** on the epic. Only
-after verification succeeds does it start the first eligible sub-issue by
-assigning it to the coding agent and labeling it `in-progress`.
+manual run **initializes** the epic: it validates the authored ordered
+sub-issue list, verifies every planned issue exists in the same repository,
+reads issue state directly from the planned issue numbers, normalizes canonical
+state labels, and persists a **frozen execution plan** on the epic. The authored
+Markdown list is authoritative; the native sub-issue hierarchy is
+non-authoritative presentation metadata and is never read or mutated during
+initialization. Only after the plan is persisted does it start the first
+eligible sub-issue by assigning it to the coding agent and labeling it
+`in-progress`.
 
 Initialization is idempotent: rerunning the workflow on an already-initialized
 epic reuses the stored plan and does not rewrite it. To intentionally re-author
@@ -203,11 +206,11 @@ records a formal `Closes #<issue>` relationship with the active sub-issue (when
 one is unambiguous) so the merge can complete it. After a human merges the
 sub-issue's pull request, the `pull_request: closed` trigger continues the loop
 automatically: it loads the frozen plan, completes the merged sub-issue, and
-starts the next planned issue. A continuation run never re-resolves competing
-issue sources or rewrites the plan. If the native sub-issue hierarchy has
-drifted away from the frozen plan, the loop pauses with `needs-human` and a
-`plan-drift` reason instead of starting a potentially incorrect issue; resolve
-the drift or rerun manually with **force-reinitialize**.
+starts the next planned issue. A continuation run uses the frozen plan as the
+sole execution-order source — it never rereads Markdown, never re-resolves
+competing issue sources, never compares the plan against the native sub-issue
+hierarchy, and never rewrites the plan. To change the execution order, edit the
+epic's Markdown and rerun manually with **force-reinitialize**.
 
 ## 11. Verify a healthy run
 

@@ -54,6 +54,13 @@ export interface PreflightInput {
   readonly configPath?: string;
   /** Optional provider-specific check, delegated to the provider port. */
   readonly providerCheck?: PreflightProviderCheck;
+  /**
+   * The frozen execution plan's ordered issues for a continuation run. When
+   * provided, preflight uses these issues directly as the controlling order and
+   * does not reread Markdown or the native sub-issue hierarchy — the frozen plan
+   * is the sole execution-order source after initialization.
+   */
+  readonly plannedIssues?: readonly number[];
 }
 
 /**
@@ -149,45 +156,57 @@ export async function preflight(
     );
   }
 
-  // Ordered sub-issues: resolve the controlling source.
-  let native: readonly number[] = [];
-  let markdown: readonly number[] = [];
-  let markdownDiscovery: MarkdownDiscoverySource | 'none' = 'none';
-  try {
-    native = await repository.getNativeSubIssueNumbers(input.epicNumber);
-  } catch (error) {
-    return operationalError(error);
-  }
-  try {
-    const discovered = await repository.getMarkdownSubIssueNumbers(
-      input.epicNumber,
-      config.issues.markdown.heading,
-    );
-    markdown = discovered.numbers;
-    markdownDiscovery = discovered.source;
-  } catch (error) {
-    if (
-      error instanceof CrossRepositoryReferenceError ||
-      error instanceof MarkdownDiscoveryError
-    ) {
-      messages.push(error.message);
-    } else {
-      return operationalError(error);
-    }
-  }
-
+  // Ordered sub-issues: resolve the controlling source. A continuation run with
+  // a frozen plan supplies its issues directly; the frozen plan is the sole
+  // execution-order source, so Markdown and the native sub-issue hierarchy are
+  // not reread.
   let source: 'native' | 'markdown' = 'native';
   let issues: readonly number[] = [];
-  const resolution = resolveIssueSource(config.issues.source, native, markdown);
-  if (!resolution.ok) {
-    messages.push(resolution.message);
+  let markdownDiscovery: MarkdownDiscoverySource | 'none' = 'none';
+
+  if (input.plannedIssues !== undefined) {
+    issues = input.plannedIssues;
   } else {
-    source = resolution.source;
-    issues = resolution.issues;
-    if (issues.length === 0 && epic !== null) {
-      messages.push(
-        `Epic #${input.epicNumber} has no ordered sub-issues for source "${config.issues.source}".`,
+    let native: readonly number[] = [];
+    let markdown: readonly number[] = [];
+    try {
+      native = await repository.getNativeSubIssueNumbers(input.epicNumber);
+    } catch (error) {
+      return operationalError(error);
+    }
+    try {
+      const discovered = await repository.getMarkdownSubIssueNumbers(
+        input.epicNumber,
+        config.issues.markdown.heading,
       );
+      markdown = discovered.numbers;
+      markdownDiscovery = discovered.source;
+    } catch (error) {
+      if (
+        error instanceof CrossRepositoryReferenceError ||
+        error instanceof MarkdownDiscoveryError
+      ) {
+        messages.push(error.message);
+      } else {
+        return operationalError(error);
+      }
+    }
+
+    const resolution = resolveIssueSource(
+      config.issues.source,
+      native,
+      markdown,
+    );
+    if (!resolution.ok) {
+      messages.push(resolution.message);
+    } else {
+      source = resolution.source;
+      issues = resolution.issues;
+      if (issues.length === 0 && epic !== null) {
+        messages.push(
+          `Epic #${input.epicNumber} has no ordered sub-issues for source "${config.issues.source}".`,
+        );
+      }
     }
   }
 

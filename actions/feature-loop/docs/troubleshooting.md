@@ -172,45 +172,26 @@ For each situation: symptom → cause → fix → verify (run a dry run, then re
   existing issue in the same repository and the epic does not list itself.
 - **Verify:** Dry-run; the summary reports the proposed plan with zero writes.
 
-### Reprioritization failures right after fresh linking
+### Native sub-issue hierarchy is non-authoritative
 
-- **Symptom:** A first-time initialization links the native sub-issues, then
-  fails while reordering them — historically surfaced as
-  `GitHub API request failed during reprioritize sub-issue: an unexpected error
-occurred.`
-- **Cause:** GitHub's sub-issue hierarchy is **eventually consistent**.
-  Immediately after attaching or reparenting several children, the relationship
-  and ordering index may not have converged, so a reorder that references a
-  freshly linked sibling fails transiently. These GraphQL failures often carry no
-  HTTP status, which previously collapsed to a generic "unexpected error".
-- **What the loop now does automatically:**
-  - After attach/reparent/remove, it **polls** native sub-issues with bounded
-    exponential backoff and jitter until every planned issue is visible under the
-    epic (`Feature Loop: waiting for native hierarchy convergence` →
-    `Feature Loop: hierarchy membership visible`).
-  - Reordering is **state-aware and incremental**: it re-reads the current native
-    order before each move, **skips** a move whose adjacency is already satisfied,
-    performs only the smallest required reprioritize, and re-reads to verify.
-  - Transient `addSubIssue`, `removeSubIssue`, and `reprioritizeSubIssue` failures
-    are **retried** with bounded backoff (`Feature Loop: reprioritize retry
-2/5`). Permanent authorization, forbidden, not-found, and REST validation
-    failures stop immediately.
-  - Sanitized errors now preserve safe GraphQL metadata (the error `type` and
-    extension `code`, for example `[type=UNPROCESSABLE, code=unprocessable]`)
-    without ever logging tokens, headers, or raw response bodies.
-- **Symptom:** `outcome: configuration-error`, reason `initialization-failed`,
-  with a message ending in `Retry 5 of 5 failed.`
-- **Cause:** The transient retry budget was exhausted — the hierarchy never
-  converged, or GitHub kept rejecting the reorder.
-- **Fix:** This is safe to rerun. A partial initialization is idempotent:
-  already-attached children are recognized, no duplicate relationship writes are
-  issued, ordering resumes from the current native state, and the frozen plan is
-  persisted only after the native order exactly matches the intended order. Rerun
-  the manual dispatch (no **force-reinitialize** is required when no plan was
-  persisted). If it keeps failing, dry-run to confirm the intended plan and
-  inspect the run log for the preserved GraphQL `type`/`code`.
-- **Verify:** Rerun the manual dispatch; the log reports
-  `Feature Loop: verified native order [...]` before the plan is persisted.
+- **Symptom:** Native sub-issue links are missing, out of order, reversed, or
+  point at a different parent in the GitHub UI.
+- **Cause:** Feature Loop no longer manages the native sub-issue hierarchy. The
+  authored Markdown ordered list is authoritative, and the frozen execution plan
+  derived from it is the sole execution-order source. Native sub-issue links and
+  ordering are presentation metadata only.
+- **What the loop does:** Initialization validates the authored Markdown list,
+  verifies every planned issue exists in the same repository, reads issue state
+  directly from the planned issue numbers, normalizes canonical state, and
+  persists the frozen plan. It never attaches, reparents, removes, reorders, or
+  polls native sub-issues, so native linking and convergence failures can never
+  block the loop.
+- **Fix:** Edit the epic's Markdown ordered list, then rerun the manual dispatch
+  with **force-reinitialize** to adopt and freeze the new order. Reconcile the
+  native sub-issue links separately in the GitHub UI if you want them to match;
+  they do not affect orchestration.
+- **Verify:** Dry-run the manual dispatch; the summary reports the proposed plan
+  with zero writes.
 
 - **Symptom:** `outcome: needs-human`, reason `unexpected-active-issue`.
 - **Cause:** A first-time initialization found a sub-issue already labeled
@@ -220,15 +201,17 @@ occurred.`
   **force-reinitialize**.
 - **Verify:** Dry-run, then re-run the manual dispatch.
 
-### Plan drift on a continuation run
+### Continuation runs follow the frozen plan
 
-- **Symptom:** `outcome: needs-human`, reason `plan-drift`.
-- **Cause:** A merged-PR continuation found that the native sub-issue hierarchy
-  no longer matches the frozen execution plan persisted at initialization. A
-  continuation run never silently repairs or reorders the plan.
-- **Fix:** Restore the native sub-issue order to match the stored plan, or rerun
-  the manual workflow with **force-reinitialize** to adopt the new hierarchy as
-  the plan.
+- **Symptom:** The native sub-issue order in the GitHub UI differs from the
+  order the loop executes on a continuation run.
+- **Cause:** A continuation run loads the persisted frozen plan and uses its
+  ordered issues directly. It never rereads Markdown and never compares the plan
+  against the native sub-issue hierarchy, so a divergent native order cannot
+  pause or redirect the loop.
+- **Fix:** No action is required for orchestration. To change the execution
+  order, edit the epic's Markdown and rerun the manual workflow with
+  **force-reinitialize** to refreeze the plan.
 - **Verify:** Dry-run the manual dispatch to confirm the intended plan, then
   reinitialize.
 

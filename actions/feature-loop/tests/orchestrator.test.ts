@@ -507,22 +507,53 @@ describe('runFeatureLoop — epic initialization and frozen plan', () => {
     expect(api.createdComments.filter((c) => c.issue === 1)).toHaveLength(0);
   });
 
-  it('pauses with plan-drift when the native hierarchy no longer matches the plan', async () => {
+  it('continues from the frozen plan even when the native hierarchy diverges', async () => {
     const { result, provider } = await run({
       config: epicConfig(
         [closedDone(11, [labels.done]), fakeIssue({ number: 12 })],
         {
           comments: { 1: [seededPlan(1, [11, 12])] },
-          // The native sub-issue order drifted away from the frozen plan.
+          // The native sub-issue order differs from the frozen plan: it is
+          // presentation metadata only and must not block the loop.
           subIssues: { 1: [12, 11] },
         },
       ),
       request: mergedPrRequest(20, [11]),
     });
 
-    expect(result.outcome).toBe('needs-human');
-    expect(result.reasonCode).toBe('plan-drift');
-    expect(provider.startRequests).toHaveLength(0);
+    expect(result.outcome).toBe('started');
+    expect(result.issueNumber).toBe(12);
+    expect(provider.startRequests[0].issue.number).toBe(12);
+  });
+
+  it('continues from the frozen plan without rereading Markdown', async () => {
+    const { result, provider } = await run({
+      config: epicConfig(
+        [closedDone(11, [labels.done]), fakeIssue({ number: 12 })],
+        {
+          comments: { 1: [seededPlan(1, [11, 12])] },
+          // The epic body now lists a different, reversed Markdown order, and
+          // the native hierarchy differs too. Under "auto" source resolution
+          // this would be ambiguous and fail preflight, but a continuation run
+          // uses the frozen plan directly and never rereads Markdown.
+          issues: {
+            1: fakeIssue({
+              number: 1,
+              title: 'Epic',
+              body: ['## Sub-issues', '', '1. #12', '2. #11'].join('\n'),
+            }),
+            11: closedDone(11, [labels.done]),
+            12: fakeIssue({ number: 12 }),
+          },
+          subIssues: { 1: [12] },
+        },
+      ),
+      request: mergedPrRequest(20, [11]),
+    });
+
+    expect(result.outcome).toBe('started');
+    expect(result.issueNumber).toBe(12);
+    expect(provider.startRequests[0].issue.number).toBe(12);
   });
 });
 

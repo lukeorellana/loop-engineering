@@ -1,6 +1,7 @@
 # ADR 0006: Epic initialization and the frozen execution plan
 
-- **Status:** Accepted
+- **Status:** Accepted (native hierarchy management superseded by
+  [ADR 0007](0007-frozen-markdown-plan-authoritative.md))
 - **Epic:** lukeorellana/loop-engineering#1
 - **Issue:** lukeorellana/loop-engineering#25
 - **Scope:** Make the initial manual run normalize an epic exactly once and

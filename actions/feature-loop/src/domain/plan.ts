@@ -4,8 +4,8 @@
  * Once an epic is initialized, the ordered sub-issue list is the execution
  * contract: native GitHub sub-issues are only the visible operational
  * representation of that contract. These helpers are pure — they validate an
- * authored ordered issue list, derive a stable plan hash, and detect drift
- * between a persisted plan and the live native hierarchy. They perform no I/O.
+ * authored ordered issue list, derive a stable plan hash, and decode a
+ * persisted plan. They perform no I/O.
  */
 
 import { createHash } from 'node:crypto';
@@ -161,40 +161,5 @@ export function decodeExecutionPlan(value: unknown): ExecutionPlan | null {
     issues,
     planHash: candidate.planHash,
     initialized: candidate.initialized === true,
-  };
-}
-
-/** Whether two ordered number lists are identical. */
-function listsEqual(a: readonly number[], b: readonly number[]): boolean {
-  return a.length === b.length && a.every((value, index) => value === b[index]);
-}
-
-/**
- * The outcome of comparing a persisted plan to the live native hierarchy.
- */
-export type PlanDrift =
-  | { readonly drifted: false }
-  | { readonly drifted: true; readonly message: string };
-
-/**
- * Detect whether the live native sub-issue order has drifted away from the
- * frozen plan. A continuation run must never silently repair drift; it pauses
- * for a human instead.
- */
-export function detectPlanDrift(
-  plan: ExecutionPlan,
-  nativeSubIssueNumbers: readonly number[],
-): PlanDrift {
-  if (listsEqual(plan.issues, nativeSubIssueNumbers)) {
-    return { drifted: false };
-  }
-  return {
-    drifted: true,
-    message:
-      `The native sub-issue hierarchy for epic #${plan.epic} no longer matches ` +
-      `the frozen execution plan. Expected [${plan.issues.join(
-        ', ',
-      )}] but found [${nativeSubIssueNumbers.join(', ')}]. ` +
-      'Resolve the drift or reinitialize the epic.',
   };
 }

@@ -80,7 +80,6 @@ the reason `initialization-failed`.
 | `ambiguous-active-issue`          | More than one sub-issue is active (`in-progress`) when linking an opened pull request; the action cannot infer which issue it completes.              |
 | `link-not-verified`               | The opened pull request body was updated, but GitHub has not yet reported the closing relationship; confirm the link before merging.                  |
 | `unexpected-active-issue`         | A first-time initialization found a sub-issue already `in-progress`; the loop will not silently adopt it. Rerun with `force-reinitialize` to recover. |
-| `plan-drift`                      | A continuation run found the native sub-issue hierarchy no longer matches the frozen execution plan; reconcile it or reinitialize.                    |
 
 When a merged pull request cannot be resolved to a single trusted completion,
 the loop pauses (`needs-human`) with one of these completion-resolution reasons:
