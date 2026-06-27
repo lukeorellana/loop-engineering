@@ -83,7 +83,7 @@ describe('readActionInputs — pull-request-mode', () => {
     expect(messages.some((m) => m.includes('pull-request-mode'))).toBe(true);
   });
 
-  it('rejects a whitespace-padded valid value', () => {
+  it('accepts and trims a whitespace-padded valid value', () => {
     const { inputs } = expectOk({ 'pull-request-mode': '  new  ' });
     expect(inputs.pullRequestMode).toBe('new');
   });
