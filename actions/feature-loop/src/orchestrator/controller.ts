@@ -37,7 +37,7 @@ import {
   type MergedPullRequest,
 } from '../domain/merged-pr.js';
 import { resolvePullRequestLink } from '../domain/pr-link.js';
-import { detectPlanDrift } from '../domain/plan.js';
+import type { ExecutionPlan } from '../domain/plan.js';
 import { decideLoop, type LoopEvaluation } from '../domain/state-machine.js';
 import type { MarkdownDiscoverySource } from '../domain/markdown.js';
 import { initializeEpic } from '../initializer/index.js';
@@ -189,6 +189,10 @@ class Controller {
   private issues!: readonly number[];
   private evaluation!: LoopEvaluation;
 
+  // The frozen execution plan for a continuation run, read before preflight so
+  // the loop never rereads Markdown on ordinary continuation runs.
+  private frozenPlan: ExecutionPlan | null = null;
+
   // Set when a trusted merged pull request completes a prior sub-issue.
   private completedIssueNumber?: number;
 
@@ -284,11 +288,23 @@ class Controller {
       this.epicNumber = epicNumber;
     }
 
+    // For a continuation run, load the frozen execution plan before preflight.
+    // The frozen plan is the sole execution-order source, so its issues are
+    // passed to preflight and Markdown is never reread on ordinary continuation
+    // runs. Manual dispatch and explicit force-reinitialize derive the order
+    // from Markdown instead.
+    if (resolved.kind !== 'manual') {
+      this.frozenPlan = await this.repository.getInitializationPlan(
+        this.epicNumber,
+      );
+    }
+
     // 2. Repository preflight.
     const pre = await preflight({
       repository: this.repository,
       epicNumber: this.epicNumber,
       configPath: this.configPath,
+      plannedIssues: this.frozenPlan?.issues,
     });
     if (!pre.ok) {
       this.logger.warning('Feature Loop preflight failed', {
@@ -349,9 +365,10 @@ class Controller {
     }
 
     // 2 (continued). Epic plan: a manual dispatch initializes (or verifies) the
-    // frozen execution plan; a continuation run reads the frozen plan and pauses
-    // on drift. Both establish the controlling ordered issue list before any
-    // epic read so the loop never re-resolves competing issue sources.
+    // frozen execution plan from the authored Markdown order; a continuation run
+    // loads the frozen plan and uses it directly. The frozen plan is the sole
+    // execution-order source, so the loop never re-resolves competing issue
+    // sources or consults the native sub-issue hierarchy.
     if (resolved.kind === 'manual') {
       const initialized = await this.initializeEpicPlan(pre.issues);
       if (initialized !== null) {
@@ -398,7 +415,6 @@ class Controller {
       epicNumber: this.epicNumber,
       intendedIssues,
       labels: this.labels,
-      exactSync: true,
       dryRun: this.dryRun,
       forceReinitialize: this.forceReinitialize,
     });
@@ -442,45 +458,26 @@ class Controller {
   }
 
   /**
-   * Load the frozen execution plan for a continuation run and verify the native
-   * hierarchy has not drifted. Returns a terminal {@link OrchestratorResult}
-   * when the plan and native hierarchy differ (`plan-drift`); otherwise returns
-   * `null` after adopting the planned order, or leaves the preflight-resolved
-   * order in place when no plan has been persisted yet.
+   * Load the frozen execution plan for a continuation run. The frozen plan is
+   * the sole execution-order source: its ordered issues are adopted directly and
+   * never compared against the native sub-issue hierarchy. When no plan has been
+   * persisted yet, the preflight-resolved Markdown order is left in place as a
+   * documented backward-compatibility path; the native order is never adopted as
+   * a replacement plan.
    */
   private async loadFrozenPlanForContinuation(): Promise<OrchestratorResult | null> {
-    const plan = await this.repository.getInitializationPlan(this.epicNumber);
+    const plan = this.frozenPlan;
     if (plan === null) {
-      // Backward compatible: an epic initialized before this feature continues
-      // on the preflight-resolved order.
+      // Backward compatible: an epic initialized before the frozen plan existed
+      // continues on the preflight-resolved Markdown order. The native sub-issue
+      // order is never adopted implicitly as a replacement plan.
       return null;
     }
 
+    // The frozen plan is the sole execution-order source. Continuation runs use
+    // its issues directly and never compare it against the native sub-issue
+    // hierarchy, which is presentation metadata only.
     this.issues = plan.issues;
-
-    const nativeOrder = await this.repository.getNativeSubIssueNumbers(
-      this.epicNumber,
-    );
-    const drift = detectPlanDrift(plan, nativeOrder);
-    if (drift.drifted) {
-      const messages = [
-        drift.message,
-        'Reinitialize the epic with force-reinitialize to adopt the new hierarchy.',
-      ];
-      await this.postStatus(this.epicNumber, {
-        state: 'needs-human',
-        reason: 'plan-drift',
-        humanText: messages.join(' '),
-      });
-      return {
-        outcome: 'needs-human',
-        reasonCode: 'plan-drift',
-        dryRun: this.dryRun,
-        epicNumber: this.epicNumber,
-        details: messages,
-      };
-    }
-
     return null;
   }
 

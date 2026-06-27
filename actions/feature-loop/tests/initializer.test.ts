@@ -12,7 +12,6 @@ import {
   initializeEpic,
   type InitializeEpicResult,
 } from '../src/initializer/index.js';
-import type { BackoffPolicy, RetryTiming } from '../src/initializer/retry.js';
 import type { Logger } from '../src/ports/logger.js';
 import {
   FakeGitHubApi,
@@ -33,28 +32,12 @@ const silentLogger: Logger = {
 interface InitOptions {
   config: FakeConfig;
   intendedIssues: number[];
-  exactSync?: boolean;
   dryRun?: boolean;
   forceReinitialize?: boolean;
   epicNumber?: number;
-  /** Mutate the fake (install transient/visibility hooks) before running. */
+  /** Mutate the fake before running. */
   prepare?: (api: FakeGitHubApi) => void;
-  /** Optional bounded backoff override (defaults to a small bounded policy). */
-  backoff?: BackoffPolicy;
 }
-
-/** Deterministic, zero-delay timing so retry/backoff tests run instantly. */
-const instantTiming: RetryTiming = {
-  sleep: async () => {},
-  random: () => 0,
-};
-
-/** A small bounded policy used by tests to keep retry counts predictable. */
-const testBackoff: BackoffPolicy = {
-  maxAttempts: 5,
-  initialDelayMs: 1,
-  maxDelayMs: 1,
-};
 
 async function init(options: InitOptions): Promise<{
   result: InitializeEpicResult;
@@ -69,13 +52,30 @@ async function init(options: InitOptions): Promise<{
     epicNumber: options.epicNumber ?? 1,
     intendedIssues: options.intendedIssues,
     labels,
-    exactSync: options.exactSync ?? true,
     dryRun: options.dryRun ?? false,
     forceReinitialize: options.forceReinitialize ?? false,
-    backoff: options.backoff ?? testBackoff,
-    timing: instantTiming,
   });
   return { result, api };
+}
+
+/** Native sub-issue hierarchy operations that initialization must never make. */
+const HIERARCHY_OPS = [
+  'listSubIssues',
+  'getParentIssueNumber',
+  'addSubIssue',
+  'removeSubIssue',
+  'reprioritizeSubIssue',
+];
+
+/** Assert that the run made zero native sub-issue hierarchy calls. */
+function expectNoHierarchyCalls(api: FakeGitHubApi): void {
+  const hierarchyCalls = api.calls.filter((call) =>
+    HIERARCHY_OPS.some((op) => call.op.startsWith(op)),
+  );
+  expect(hierarchyCalls).toEqual([]);
+  expect(api.addedSubIssues).toHaveLength(0);
+  expect(api.removedSubIssues).toHaveLength(0);
+  expect(api.reprioritized).toHaveLength(0);
 }
 
 /** Build a config with an epic #1 and the given issues/parents/order. */
@@ -108,7 +108,8 @@ function seededPlan(epicNumber: number, issues: number[]) {
 }
 
 describe('initializeEpic — fresh initialization', () => {
-  it('attaches unparented issues and persists the plan', async () => {
+  it('freezes the plan for unlinked planned issues with zero hierarchy calls', async () => {
+    // None of the issues are linked as native sub-issues of the epic.
     const { result, api } = await init({
       config: epicConfig([
         fakeIssue({ number: 11 }),
@@ -118,61 +119,17 @@ describe('initializeEpic — fresh initialization', () => {
     });
 
     expect(result.kind).toBe('initialized');
-    expect(api.addedSubIssues.map((entry) => entry.sub).sort()).toEqual([
+    expect(result.kind === 'initialized' && result.plan.issues).toEqual([
       11, 12,
     ]);
-    // The plan is persisted on the epic after verification.
+    // The plan is persisted on the epic.
     expect(api.createdComments.some((c) => c.issue === 1)).toBe(true);
+    expectNoHierarchyCalls(api);
   });
 
-  it('does no hierarchy writes when already fully linked and ordered', async () => {
-    const { result, api } = await init({
-      config: epicConfig(
-        [fakeIssue({ number: 11 }), fakeIssue({ number: 12 })],
-        { subIssues: { 1: [11, 12] }, parents: { 11: 1, 12: 1 } },
-      ),
-      intendedIssues: [11, 12],
-    });
-
-    expect(result.kind).toBe('initialized');
-    expect(api.addedSubIssues).toHaveLength(0);
-    expect(api.reprioritized).toHaveLength(0);
-    expect(api.removedSubIssues).toHaveLength(0);
-  });
-});
-
-describe('initializeEpic — repair and reparenting', () => {
-  it('reparents an issue attached to a different epic', async () => {
-    const { result, api } = await init({
-      config: epicConfig([fakeIssue({ number: 11 })], {
-        subIssues: { 1: [], 9: [11] },
-        parents: { 11: 9 },
-      }),
-      intendedIssues: [11],
-    });
-
-    expect(result.kind).toBe('initialized');
-    expect(api.addedSubIssues).toContainEqual({
-      parent: 1,
-      sub: 11,
-      replaceParent: true,
-    });
-  });
-
-  it('removes unexpected native sub-issues under exact synchronization', async () => {
-    const { result, api } = await init({
-      config: epicConfig(
-        [fakeIssue({ number: 11 }), fakeIssue({ number: 99 })],
-        { subIssues: { 1: [11, 99] }, parents: { 11: 1, 99: 1 } },
-      ),
-      intendedIssues: [11],
-    });
-
-    expect(result.kind).toBe('initialized');
-    expect(api.removedSubIssues).toContainEqual({ parent: 1, sub: 99 });
-  });
-
-  it('reorders native sub-issues to match the requested order', async () => {
+  it('initializes regardless of the native linked order or membership', async () => {
+    // The native order is empty, reversed, incomplete, and includes a stranger;
+    // none of this affects the frozen plan derived from the authored order.
     const { result, api } = await init({
       config: epicConfig(
         [
@@ -180,33 +137,55 @@ describe('initializeEpic — repair and reparenting', () => {
           fakeIssue({ number: 12 }),
           fakeIssue({ number: 13 }),
         ],
-        { subIssues: { 1: [13, 11, 12] }, parents: { 11: 1, 12: 1, 13: 1 } },
+        { subIssues: { 1: [13, 99] }, parents: { 11: 7, 13: 1 } },
       ),
       intendedIssues: [11, 12, 13],
     });
 
     expect(result.kind).toBe('initialized');
-    expect(api.reprioritized.length).toBeGreaterThan(0);
-    // After reordering, the native order matches the plan exactly.
-    const finalOrder = await api.listSubIssues(1, 1);
-    expect(finalOrder.items.map((ref) => ref.number)).toEqual([11, 12, 13]);
+    expect(result.kind === 'initialized' && result.plan.issues).toEqual([
+      11, 12, 13,
+    ]);
+    expectNoHierarchyCalls(api);
+  });
+
+  it('initializes even when native hierarchy API calls would fail', async () => {
+    const boom = (): never => {
+      throw new Error('native hierarchy API is unavailable');
+    };
+    const { result, api } = await init({
+      config: epicConfig([
+        fakeIssue({ number: 11 }),
+        fakeIssue({ number: 12 }),
+      ]),
+      intendedIssues: [11, 12],
+      prepare: (fake) => {
+        // Any native hierarchy read/mutation throws; initialization must not
+        // depend on them.
+        fake.listSubIssues = boom as typeof fake.listSubIssues;
+        fake.getParentIssueNumber = boom as typeof fake.getParentIssueNumber;
+        fake.addSubIssue = boom as typeof fake.addSubIssue;
+        fake.removeSubIssue = boom as typeof fake.removeSubIssue;
+        fake.reprioritizeSubIssue = boom as typeof fake.reprioritizeSubIssue;
+      },
+    });
+
+    expect(result.kind).toBe('initialized');
+    expect(api.createdComments.some((c) => c.issue === 1)).toBe(true);
   });
 });
 
 describe('initializeEpic — state normalization', () => {
   it('normalizes a completed issue with a stale running label to done', async () => {
     const { result, api } = await init({
-      config: epicConfig(
-        [
-          fakeIssue({
-            number: 11,
-            open: false,
-            closedReason: 'completed',
-            labelNames: [labels['in-progress']],
-          }),
-        ],
-        { subIssues: { 1: [11] }, parents: { 11: 1 } },
-      ),
+      config: epicConfig([
+        fakeIssue({
+          number: 11,
+          open: false,
+          closedReason: 'completed',
+          labelNames: [labels['in-progress']],
+        }),
+      ]),
       intendedIssues: [11],
     });
 
@@ -215,14 +194,14 @@ describe('initializeEpic — state normalization', () => {
       issue: 11,
       labels: [labels.done],
     });
+    expectNoHierarchyCalls(api);
   });
 
   it('fails closed on an unexpected active issue', async () => {
     const { result } = await init({
-      config: epicConfig(
-        [fakeIssue({ number: 11, labelNames: [labels['in-progress']] })],
-        { subIssues: { 1: [11] }, parents: { 11: 1 } },
-      ),
+      config: epicConfig([
+        fakeIssue({ number: 11, labelNames: [labels['in-progress']] }),
+      ]),
       intendedIssues: [11],
     });
 
@@ -234,10 +213,9 @@ describe('initializeEpic — state normalization', () => {
 
   it('allows an active issue during an explicit reinitialization', async () => {
     const { result } = await init({
-      config: epicConfig(
-        [fakeIssue({ number: 11, labelNames: [labels['in-progress']] })],
-        { subIssues: { 1: [11] }, parents: { 11: 1 } },
-      ),
+      config: epicConfig([
+        fakeIssue({ number: 11, labelNames: [labels['in-progress']] }),
+      ]),
       intendedIssues: [11],
       forceReinitialize: true,
     });
@@ -270,33 +248,34 @@ describe('initializeEpic — validation', () => {
     });
     expect(result.kind).toBe('failed');
   });
+
+  it('rejects an empty plan', async () => {
+    const { result } = await init({
+      config: epicConfig([]),
+      intendedIssues: [],
+    });
+    expect(result.kind).toBe('failed');
+  });
 });
 
 describe('initializeEpic — idempotency and reinitialization', () => {
   it('returns already-initialized for a normal rerun', async () => {
     const { result, api } = await init({
       config: epicConfig([fakeIssue({ number: 11 })], {
-        subIssues: { 1: [11] },
-        parents: { 11: 1 },
         comments: { 1: [seededPlan(1, [11])] },
       }),
       intendedIssues: [11],
     });
 
     expect(result.kind).toBe('already-initialized');
-    expect(api.addedSubIssues).toHaveLength(0);
-    expect(api.reprioritized).toHaveLength(0);
+    expectNoHierarchyCalls(api);
   });
 
-  it('rewrites the plan when reinitialization is forced', async () => {
-    const { result } = await init({
+  it('rewrites the plan with the newly validated order when forced', async () => {
+    const { result, api } = await init({
       config: epicConfig(
         [fakeIssue({ number: 11 }), fakeIssue({ number: 12 })],
-        {
-          subIssues: { 1: [11] },
-          parents: { 11: 1 },
-          comments: { 1: [seededPlan(1, [11])] },
-        },
+        { comments: { 1: [seededPlan(1, [11])] } },
       ),
       intendedIssues: [11, 12],
       forceReinitialize: true,
@@ -306,6 +285,7 @@ describe('initializeEpic — idempotency and reinitialization', () => {
     expect(result.kind === 'initialized' && result.plan.issues).toEqual([
       11, 12,
     ]);
+    expectNoHierarchyCalls(api);
   });
 });
 
@@ -328,310 +308,25 @@ describe('initializeEpic — dry run', () => {
     expect(api.reprioritized).toHaveLength(0);
     expect(api.createdComments).toHaveLength(0);
     expect(api.addedLabels).toHaveLength(0);
+    expect(api.stateChanges).toHaveLength(0);
   });
 });
 
-describe('initializeEpic — hierarchy convergence and retries', () => {
-  it('waits for delayed native visibility before reordering', async () => {
-    const { result, api } = await init({
-      config: epicConfig([
-        fakeIssue({ number: 11 }),
-        fakeIssue({ number: 12 }),
-        fakeIssue({ number: 13 }),
-      ]),
-      intendedIssues: [11, 12, 13],
-      prepare: (fake) => {
-        // The first two native reads omit #13, modeling a hierarchy index that
-        // has not yet converged after linking.
-        fake.nativeVisibilityDelay = 2;
-        fake.hiddenUntilVisible = [13];
-      },
-    });
-
-    expect(result.kind).toBe('initialized');
-    const finalOrder = await api.listSubIssues(1, 1);
-    expect(finalOrder.items.map((ref) => ref.number)).toEqual([11, 12, 13]);
-  });
-
-  it('retries a transient reprioritize failure once, then succeeds', async () => {
-    const { result, api } = await init({
-      config: epicConfig(
-        [
-          fakeIssue({ number: 11 }),
-          fakeIssue({ number: 12 }),
-          fakeIssue({ number: 13 }),
-        ],
-        { subIssues: { 1: [13, 11, 12] }, parents: { 11: 1, 12: 1, 13: 1 } },
-      ),
-      intendedIssues: [11, 12, 13],
-      prepare: (fake) => {
-        fake.reprioritizeFailures = 1;
-      },
-    });
-
-    expect(result.kind).toBe('initialized');
-    const finalOrder = await api.listSubIssues(1, 1);
-    expect(finalOrder.items.map((ref) => ref.number)).toEqual([11, 12, 13]);
-  });
-
-  it('retries a transient reprioritize failure several times within the bound', async () => {
-    const { result, api } = await init({
-      config: epicConfig(
-        [
-          fakeIssue({ number: 11 }),
-          fakeIssue({ number: 12 }),
-          fakeIssue({ number: 13 }),
-        ],
-        { subIssues: { 1: [13, 11, 12] }, parents: { 11: 1, 12: 1, 13: 1 } },
-      ),
-      intendedIssues: [11, 12, 13],
-      prepare: (fake) => {
-        fake.reprioritizeFailures = 3;
-      },
-    });
-
-    expect(result.kind).toBe('initialized');
-    const finalOrder = await api.listSubIssues(1, 1);
-    expect(finalOrder.items.map((ref) => ref.number)).toEqual([11, 12, 13]);
-  });
-
-  it('returns initialization-failed when transient retries are exhausted', async () => {
-    const { result, api } = await init({
-      config: epicConfig(
-        [
-          fakeIssue({ number: 11 }),
-          fakeIssue({ number: 12 }),
-          fakeIssue({ number: 13 }),
-        ],
-        { subIssues: { 1: [13, 11, 12] }, parents: { 11: 1, 12: 1, 13: 1 } },
-      ),
-      intendedIssues: [11, 12, 13],
-      prepare: (fake) => {
-        // Always fail: more failures than the retry budget allows.
-        fake.reprioritizeFailures = 100;
-      },
-    });
-
-    expect(result.kind).toBe('failed');
-    expect(
-      result.kind === 'failed' && result.reason === 'initialization-failed',
-    ).toBe(true);
-    expect(result.kind === 'failed' && result.messages.join(' ')).toContain(
-      'Retry 5 of 5 failed',
-    );
-    // The frozen plan must not be persisted when ordering fails.
-    expect(api.createdComments.some((c) => c.issue === 1)).toBe(false);
-  });
-
-  it('does not retry a permanent reprioritize failure', async () => {
-    const { result, api } = await init({
-      config: epicConfig(
-        [
-          fakeIssue({ number: 11 }),
-          fakeIssue({ number: 12 }),
-          fakeIssue({ number: 13 }),
-        ],
-        { subIssues: { 1: [13, 11, 12] }, parents: { 11: 1, 12: 1, 13: 1 } },
-      ),
-      intendedIssues: [11, 12, 13],
-      prepare: (fake) => {
-        fake.reprioritizeFailures = 1;
-        fake.transientError = fake.permanentError;
-      },
-    });
-
-    expect(result.kind).toBe('failed');
-    // A permanent failure stops immediately: exactly one failed attempt.
-    const failedCalls = api.calls.filter(
-      (call) => call.op === 'reprioritizeSubIssue:failed',
-    );
-    expect(failedCalls).toHaveLength(1);
-    expect(result.kind === 'failed' && result.messages.join(' ')).toContain(
-      'forbidden',
-    );
-  });
-
-  it('skips reprioritize when adjacency is already satisfied', async () => {
-    const { result, api } = await init({
-      config: epicConfig(
-        [
-          fakeIssue({ number: 11 }),
-          fakeIssue({ number: 12 }),
-          fakeIssue({ number: 13 }),
-        ],
-        { subIssues: { 1: [11, 12, 13] }, parents: { 11: 1, 12: 1, 13: 1 } },
-      ),
-      intendedIssues: [11, 12, 13],
-    });
-
-    expect(result.kind).toBe('initialized');
-    // Already ordered: no reprioritize writes are issued.
-    expect(api.reprioritized).toHaveLength(0);
-  });
-
-  it('resumes ordering safely from current native state on rerun', async () => {
-    // The epic is fully linked but partially ordered ([11, 13, 12]); a rerun
-    // (no persisted plan) must finish ordering without re-linking.
-    const { result, api } = await init({
-      config: epicConfig(
-        [
-          fakeIssue({ number: 11 }),
-          fakeIssue({ number: 12 }),
-          fakeIssue({ number: 13 }),
-        ],
-        { subIssues: { 1: [11, 13, 12] }, parents: { 11: 1, 12: 1, 13: 1 } },
-      ),
-      intendedIssues: [11, 12, 13],
-    });
-
-    expect(result.kind).toBe('initialized');
-    expect(api.addedSubIssues).toHaveLength(0);
-    const finalOrder = await api.listSubIssues(1, 1);
-    expect(finalOrder.items.map((ref) => ref.number)).toEqual([11, 12, 13]);
-  });
-});
-
-describe('initializeEpic — LingoQuest race recovery (integration)', () => {
-  it('attaches eight issues, survives stale reads and a transient reprioritize, and persists the plan', async () => {
-    const issues = [201, 202, 203, 204, 205, 206, 207, 208];
-    const { result, api } = await init({
-      config: epicConfig(
-        issues.map((number) => fakeIssue({ number })),
-        // None are linked yet; all eight are unparented planned issues.
-        { subIssues: { 1: [] } },
-      ),
-      intendedIssues: issues,
-      prepare: (fake) => {
-        // The first post-attach hierarchy reread is temporarily incomplete (the
-        // last two children are not yet visible), and the first reprioritize
-        // fails transiently before succeeding. (Call #1 is the pre-attach
-        // planning read of the empty epic, so a delay of 2 hides on the first
-        // convergence poll.)
-        fake.nativeVisibilityDelay = 2;
-        fake.hiddenUntilVisible = [207, 208];
-        fake.reprioritizeFailures = 1;
-      },
-    });
-
-    expect(result.kind).toBe('initialized');
-    expect(api.addedSubIssues.map((entry) => entry.sub).sort()).toEqual(
-      [...issues].sort(),
-    );
-    const finalOrder = await api.listSubIssues(1, 1);
-    expect(finalOrder.items.map((ref) => ref.number)).toEqual(issues);
-    // The frozen plan is persisted on the epic only after verification.
-    expect(api.createdComments.some((c) => c.issue === 1)).toBe(true);
-    expect(result.kind === 'initialized' && result.plan.issues).toEqual(issues);
-  });
-});
-
-describe('initializeEpic — authoritative reorder convergence', () => {
-  it('normalizes a fully reversed order to the intended order', async () => {
-    const issues = [11, 12, 13, 14, 15];
-    const { result, api } = await init({
-      config: epicConfig(
-        issues.map((number) => fakeIssue({ number })),
-        {
-          subIssues: { 1: [15, 14, 13, 12, 11] },
-          parents: { 11: 1, 12: 1, 13: 1, 14: 1, 15: 1 },
-        },
-      ),
-      intendedIssues: issues,
-    });
-
-    expect(result.kind).toBe('initialized');
-    const finalOrder = await api.listSubIssues(1, 1);
-    expect(finalOrder.items.map((ref) => ref.number)).toEqual(issues);
-  });
-
-  it('reorders the exact LingoQuest plan [171..178]', async () => {
+describe('initializeEpic — LingoQuest plan', () => {
+  it('freezes the exact plan [171..178] when the native order is empty', async () => {
     const issues = [171, 172, 173, 174, 175, 176, 177, 178];
     const { result, api } = await init({
       config: epicConfig(
         issues.map((number) => fakeIssue({ number })),
-        // Linked but fully reversed, exercising the reported epic's plan.
-        {
-          subIssues: { 1: [...issues].reverse() },
-          parents: Object.fromEntries(issues.map((number) => [number, 1])),
-        },
+        // No native links at all: the authored order is authoritative.
+        { subIssues: { 1: [] } },
       ),
       intendedIssues: issues,
     });
 
     expect(result.kind).toBe('initialized');
-    const finalOrder = await api.listSubIssues(1, 1);
-    expect(finalOrder.items.map((ref) => ref.number)).toEqual(issues);
     expect(result.kind === 'initialized' && result.plan.issues).toEqual(issues);
-  });
-
-  it('converges after the order is stale for a few verification reads', async () => {
-    const { result, api } = await init({
-      config: epicConfig(
-        [fakeIssue({ number: 11 }), fakeIssue({ number: 12 })],
-        { subIssues: { 1: [12, 11] }, parents: { 11: 1, 12: 1 } },
-      ),
-      intendedIssues: [11, 12],
-      prepare: (fake) => {
-        // The accepted reorder is not visible for the first two reads.
-        fake.reorderConvergenceDelay = 2;
-      },
-    });
-
-    expect(result.kind).toBe('initialized');
-    // The mutation is sent exactly once and not resent during the stale reads.
-    expect(api.reprioritized).toHaveLength(1);
-    const finalOrder = await api.listSubIssues(1, 1);
-    expect(finalOrder.items.map((ref) => ref.number)).toEqual([11, 12]);
-  });
-
-  it('fails with an actionable timeout when an accepted reorder never converges', async () => {
-    const { result, api } = await init({
-      config: epicConfig(
-        [fakeIssue({ number: 11 }), fakeIssue({ number: 12 })],
-        { subIssues: { 1: [12, 11] }, parents: { 11: 1, 12: 1 } },
-      ),
-      intendedIssues: [11, 12],
-      prepare: (fake) => {
-        // The mutation is accepted but the authoritative order never reflects
-        // it within the verification budget (the reported bug).
-        fake.reorderConvergenceDelay = 100;
-      },
-    });
-
-    expect(result.kind).toBe('failed');
-    // The accepted mutation is sent exactly once; verification never resends it.
-    expect(api.reprioritized).toHaveLength(1);
-    const message = result.kind === 'failed' ? result.messages.join(' ') : '';
-    expect(message).toContain('expected issue #12 immediately after #11');
-    expect(message).toContain('last observed order [12, 11]');
-    expect(message).toContain('priority mutation accepted: true');
-    // The frozen plan must not be persisted when verification times out.
-    expect(api.createdComments.some((c) => c.issue === 1)).toBe(false);
-  });
-
-  it('uses separate bounded budgets for mutation retry and verification polling', async () => {
-    const { result, api } = await init({
-      config: epicConfig(
-        [fakeIssue({ number: 11 }), fakeIssue({ number: 12 })],
-        { subIssues: { 1: [12, 11] }, parents: { 11: 1, 12: 1 } },
-      ),
-      intendedIssues: [11, 12],
-      prepare: (fake) => {
-        // Three transient mutation failures (within the retry budget) and two
-        // stale verification reads (within the polling budget) both resolve.
-        fake.reprioritizeFailures = 3;
-        fake.reorderConvergenceDelay = 2;
-      },
-    });
-
-    expect(result.kind).toBe('initialized');
-    const failed = api.calls.filter(
-      (call) => call.op === 'reprioritizeSubIssue:failed',
-    );
-    expect(failed).toHaveLength(3);
-    // Exactly one mutation is ultimately accepted across both budgets.
-    expect(api.reprioritized).toHaveLength(1);
-    const finalOrder = await api.listSubIssues(1, 1);
-    expect(finalOrder.items.map((ref) => ref.number)).toEqual([11, 12]);
+    expect(api.createdComments.some((c) => c.issue === 1)).toBe(true);
+    expectNoHierarchyCalls(api);
   });
 });

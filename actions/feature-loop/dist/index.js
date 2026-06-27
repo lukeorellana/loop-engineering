@@ -69787,8 +69787,8 @@ var external_node_crypto_ = __nccwpck_require__(7598);
  * Once an epic is initialized, the ordered sub-issue list is the execution
  * contract: native GitHub sub-issues are only the visible operational
  * representation of that contract. These helpers are pure — they validate an
- * authored ordered issue list, derive a stable plan hash, and detect drift
- * between a persisted plan and the live native hierarchy. They perform no I/O.
+ * authored ordered issue list, derive a stable plan hash, and decode a
+ * persisted plan. They perform no I/O.
  */
 
 /** The only execution-plan schema version this build understands. */
@@ -69888,26 +69888,6 @@ function decodeExecutionPlan(value) {
         issues,
         planHash: candidate.planHash,
         initialized: candidate.initialized === true,
-    };
-}
-/** Whether two ordered number lists are identical. */
-function plan_listsEqual(a, b) {
-    return a.length === b.length && a.every((value, index) => value === b[index]);
-}
-/**
- * Detect whether the live native sub-issue order has drifted away from the
- * frozen plan. A continuation run must never silently repair drift; it pauses
- * for a human instead.
- */
-function detectPlanDrift(plan, nativeSubIssueNumbers) {
-    if (plan_listsEqual(plan.issues, nativeSubIssueNumbers)) {
-        return { drifted: false };
-    }
-    return {
-        drifted: true,
-        message: `The native sub-issue hierarchy for epic #${plan.epic} no longer matches ` +
-            `the frozen execution plan. Expected [${plan.issues.join(', ')}] but found [${nativeSubIssueNumbers.join(', ')}]. ` +
-            'Resolve the drift or reinitialize the epic.',
     };
 }
 
@@ -72082,81 +72062,6 @@ function decideLoop(epic, evaluation) {
     return { outcome: 'complete', epic };
 }
 
-;// CONCATENATED MODULE: ./src/initializer/retry.ts
-/**
- * Bounded retry, exponential backoff with jitter, and convergence polling for
- * eventually-consistent GitHub hierarchy mutations.
- *
- * Freshly linked native sub-issues are not always immediately readable, and a
- * reorder that references a sibling GitHub has not yet stabilized fails with a
- * statusless GraphQL error. These helpers retry only failures the adapter
- * classified as transient ({@link RepositoryApiError.retryable}); permanent
- * authorization, validation, and not-found failures fail immediately. All loops
- * are bounded — there is no unbounded sleep or retry.
- */
-
-/** Real wall-clock timing for production use. */
-const realTiming = {
-    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-    random: () => Math.random(),
-};
-/** The default policy for hierarchy mutations and convergence polling. */
-const HIERARCHY_BACKOFF = {
-    maxAttempts: 5,
-    initialDelayMs: 200,
-    maxDelayMs: 4000,
-};
-/**
- * Compute the backoff delay for a 1-based attempt using capped exponential
- * growth and equal jitter (half fixed, half random) so concurrent runs do not
- * synchronize while a positive lower bound is preserved.
- */
-function backoffDelayMs(policy, attempt, random) {
-    const exponential = policy.initialDelayMs * 2 ** Math.max(0, attempt - 1);
-    const capped = Math.min(policy.maxDelayMs, exponential);
-    const half = capped / 2;
-    return Math.floor(half + random() * half);
-}
-/**
- * Run `fn` with bounded retries, retrying only transient
- * {@link RepositoryApiError}s. Non-`RepositoryApiError` throwables propagate
- * unchanged (they indicate a programming error, not a transport failure).
- * `onRetry` is invoked before each backoff sleep with the upcoming attempt
- * number so callers can emit safe progress logs.
- */
-async function retryTransient(fn, policy, timing, onRetry) {
-    let lastError = null;
-    for (let attempt = 1; attempt <= policy.maxAttempts; attempt += 1) {
-        try {
-            return { ok: true, value: await fn() };
-        }
-        catch (error) {
-            if (!(error instanceof RepositoryApiError)) {
-                throw error;
-            }
-            lastError = error;
-            if (!error.retryable || attempt >= policy.maxAttempts) {
-                return { ok: false, error };
-            }
-            onRetry?.(attempt + 1, error);
-            await timing.sleep(backoffDelayMs(policy, attempt, timing.random));
-        }
-    }
-    // Unreachable: the loop always returns. Present only for exhaustiveness.
-    return {
-        ok: false,
-        error: lastError ??
-            new RepositoryApiError('retry', 'unknown', null, { retryable: false }),
-    };
-}
-/**
- * Build a safe, actionable message for an exhausted retry budget. It carries the
- * sanitized failure reason plus the attempt count, never raw response data.
- */
-function retryExhaustedMessage(error, policy) {
-    return `${error.message} Retry ${policy.maxAttempts} of ${policy.maxAttempts} failed.`;
-}
-
 ;// CONCATENATED MODULE: ./src/initializer/initialize-epic.ts
 /**
  * Idempotent epic initialization.
@@ -72165,244 +72070,25 @@ function retryExhaustedMessage(error, policy) {
  * execution plan. {@link initializeEpic} follows a strict transactional pattern:
  *
  *     read desired state
- *     -> calculate mutations
- *     -> apply only missing changes
- *     -> re-read
- *     -> verify exact match
- *     -> persist the initialized marker last
+ *     -> validate the authored ordered issue list
+ *     -> verify every planned issue exists in this repository
+ *     -> read issue state directly from the planned issue numbers
+ *     -> normalize canonical state
+ *     -> persist the frozen plan last
  *
- * It is safe to rerun after a partial failure: every mutation is idempotent and
- * the plan is only persisted after the native hierarchy is verified. Later runs
- * read the persisted plan instead of re-resolving competing issue sources.
+ * The authored Markdown ordered list is authoritative. Native GitHub sub-issue
+ * links and ordering are presentation metadata outside Feature Loop's
+ * orchestration responsibilities: initialization neither reads nor mutates the
+ * native sub-issue hierarchy, so native linking, reparenting, removal,
+ * reordering, and convergence failures can never block the loop. The frozen
+ * plan is the sole execution-order source for every later run.
  */
 
-
-
-function initialize_epic_listsEqual(a, b) {
-    return a.length === b.length && a.every((value, index) => value === b[index]);
-}
-/** `true` when `sub` immediately follows `after` in `native`. */
-function adjacencySatisfied(native, sub, after) {
-    const afterIndex = native.indexOf(after);
-    return afterIndex !== -1 && native[afterIndex + 1] === sub;
-}
-/**
- * Poll native sub-issues with bounded backoff until `isSatisfied` accepts the
- * visible membership. Transient read failures are retried; permanent failures
- * stop immediately. Returns the converged membership or a safe failure.
- */
-async function waitForMembership(ctx, isSatisfied) {
-    const { repository, logger, epicNumber, policy, timing } = ctx;
-    let lastError = null;
-    let lastNative = null;
-    for (let attempt = 1; attempt <= policy.maxAttempts; attempt += 1) {
-        try {
-            const native = await repository.getNativeSubIssueNumbers(epicNumber);
-            lastNative = native;
-            if (isSatisfied(native)) {
-                return { ok: true, native };
-            }
-        }
-        catch (error) {
-            if (!(error instanceof RepositoryApiError)) {
-                throw error;
-            }
-            if (!error.retryable) {
-                return { ok: false, messages: [error.message] };
-            }
-            lastError = error;
-        }
-        if (attempt >= policy.maxAttempts) {
-            break;
-        }
-        await timing.sleep(backoffDelayMs(policy, attempt, timing.random));
-    }
-    const reason = lastError !== null
-        ? retryExhaustedMessage(lastError, policy)
-        : `Epic #${epicNumber} hierarchy did not converge after linking; ` +
-            `last visible native sub-issues were [${(lastNative ?? []).join(', ')}].`;
-    logger.warning('Feature Loop: hierarchy convergence timed out', {
-        epic: epicNumber,
-    });
-    return { ok: false, messages: [reason] };
-}
-/**
- * Poll the authoritative native sub-issue order with bounded backoff until
- * `isSatisfied` accepts the observed order. Each successful read is reported to
- * `onObserve` so callers can log the observed issue-number order. The outcome
- * distinguishes three terminal states so callers can build precise diagnostics:
- *
- *   - `ok`: the predicate was satisfied; the converged order is returned.
- *   - `!ok` with `error`: a read failed permanently, or transient read failures
- *     exhausted the budget.
- *   - `!ok` with `error: null`: reads succeeded but the predicate never held
- *     within the budget (a convergence timeout); `lastNative` is the last order.
- */
-async function pollNativeOrder(ctx, isSatisfied, onObserve) {
-    const { repository, epicNumber, policy, timing } = ctx;
-    let lastNative = null;
-    let lastError = null;
-    for (let attempt = 1; attempt <= policy.maxAttempts; attempt += 1) {
-        try {
-            const native = await repository.getNativeSubIssues(epicNumber);
-            lastNative = native;
-            onObserve?.(native);
-            if (isSatisfied(native)) {
-                return { ok: true, native };
-            }
-            // A successful but unsatisfied read is a convergence timeout, not a
-            // transport failure: clear any prior transient error.
-            lastError = null;
-        }
-        catch (error) {
-            if (!(error instanceof RepositoryApiError)) {
-                throw error;
-            }
-            if (!error.retryable) {
-                return { ok: false, lastNative, error };
-            }
-            lastError = error;
-        }
-        if (attempt >= policy.maxAttempts) {
-            break;
-        }
-        await timing.sleep(backoffDelayMs(policy, attempt, timing.random));
-    }
-    return { ok: false, lastNative, error: lastError };
-}
-/** Render an observed native order as its issue-number list for logging. */
-function observedNumbers(native) {
-    return native.map((sub) => sub.number);
-}
-/**
- * Move `sub` so it immediately follows `after`, separating mutation retry from
- * verification polling against one authoritative REST surface:
- *
- *   1. read the current order and log it;
- *   2. skip the write when adjacency already holds, or wait for both endpoints
- *      to become visible;
- *   3. send exactly one priority mutation, retrying only when that mutation
- *      throws a retryable error (permanent errors stop immediately);
- *   4. after the mutation is accepted, poll the order — without resending the
- *      mutation — until adjacency converges, logging each observed order.
- *
- * A convergence timeout reports the expected adjacency, the last observed order,
- * and that the mutation was accepted, so the failure is actionable.
- */
-async function ensureAdjacency(ctx, move) {
-    const { logger, epicNumber, policy, timing, repository } = ctx;
-    const { sub, after } = move;
-    // 1-2. Read the current order; skip when already adjacent; otherwise wait for
-    // both endpoints to be visible before attempting a move.
-    const ready = await pollNativeOrder(ctx, (native) => {
-        const numbers = observedNumbers(native);
-        return (adjacencySatisfied(numbers, sub, after) ||
-            (numbers.includes(sub) && numbers.includes(after)));
-    }, (native) => logger.info('Feature Loop: observed native order before reorder', {
-        epic: epicNumber,
-        sub,
-        after,
-        order: observedNumbers(native),
-    }));
-    if (!ready.ok) {
-        return {
-            ok: false,
-            messages: [readFailureMessage(ctx, ready, sub, after)],
-        };
-    }
-    const current = observedNumbers(ready.native);
-    if (adjacencySatisfied(current, sub, after)) {
-        // Adjacency already holds (possibly converged asynchronously): no write.
-        return { ok: true };
-    }
-    const subId = ready.native.find((entry) => entry.number === sub)?.databaseId;
-    const afterId = ready.native.find((entry) => entry.number === after)?.databaseId;
-    if (subId === undefined || afterId === undefined) {
-        // Unreachable: the read predicate guarantees both endpoints are visible.
-        return {
-            ok: false,
-            messages: [
-                `Epic #${epicNumber} reorder of issue #${sub} after #${after} could ` +
-                    `not resolve sub-issue database ids from the native order ` +
-                    `[${current.join(', ')}].`,
-            ],
-        };
-    }
-    // 3. Send exactly one priority mutation, retrying only retryable failures.
-    logger.info(`Feature Loop: reprioritizing issue #${sub} after #${after}`, {
-        epic: epicNumber,
-    });
-    const mutation = await retryTransient(() => repository.reprioritizeSubIssue(epicNumber, subId, afterId), policy, timing, (nextAttempt) => logger.info(`Feature Loop: reprioritize retry ${nextAttempt}/${policy.maxAttempts}`, { epic: epicNumber, issue: sub }));
-    if (!mutation.ok) {
-        const message = mutation.error.retryable
-            ? retryExhaustedMessage(mutation.error, policy)
-            : mutation.error.message;
-        return { ok: false, messages: [message] };
-    }
-    // 4. Poll for convergence without resending the mutation.
-    let lastObserved = current;
-    const verified = await pollNativeOrder(ctx, (native) => adjacencySatisfied(observedNumbers(native), sub, after), (native) => {
-        lastObserved = observedNumbers(native);
-        logger.info('Feature Loop: observed native order during verification', {
-            epic: epicNumber,
-            sub,
-            after,
-            order: lastObserved,
-        });
-    });
-    if (verified.ok) {
-        return { ok: true };
-    }
-    if (verified.error !== null) {
-        const message = verified.error.retryable
-            ? retryExhaustedMessage(verified.error, policy)
-            : verified.error.message;
-        return { ok: false, messages: [message] };
-    }
-    const observed = verified.lastNative
-        ? observedNumbers(verified.lastNative)
-        : lastObserved;
-    return {
-        ok: false,
-        messages: [
-            `Epic #${epicNumber} reorder did not converge within ` +
-                `${policy.maxAttempts} verification attempts: expected issue #${sub} ` +
-                `immediately after #${after}; last observed order [${observed.join(', ')}]; priority mutation accepted: true.`,
-        ],
-    };
-}
-/**
- * Build a safe message for a failed pre-move read: an exhausted/permanent read
- * error, or a visibility timeout where both endpoints never became visible.
- */
-function readFailureMessage(ctx, outcome, sub, after) {
-    if (outcome.error !== null) {
-        return outcome.error.retryable
-            ? retryExhaustedMessage(outcome.error, ctx.policy)
-            : outcome.error.message;
-    }
-    const observed = outcome.lastNative
-        ? observedNumbers(outcome.lastNative)
-        : [];
-    return (`Epic #${ctx.epicNumber} reorder of issue #${sub} after #${after} could ` +
-        `not begin: both sub-issues were not visible within ` +
-        `${ctx.policy.maxAttempts} attempts; last observed order ` +
-        `[${observed.join(', ')}]; priority mutation accepted: false.`);
-}
 /**
  * Run the idempotent epic initialization transaction.
  */
 async function initializeEpic(input) {
-    const { repository, logger, epicNumber, intendedIssues, labels, exactSync, dryRun, forceReinitialize, } = input;
-    const policy = input.backoff ?? HIERARCHY_BACKOFF;
-    const timing = input.timing ?? realTiming;
-    const hierarchy = {
-        repository,
-        logger,
-        epicNumber,
-        policy,
-        timing,
-    };
+    const { repository, logger, epicNumber, intendedIssues, labels, dryRun, forceReinitialize, } = input;
     // A normal rerun of an already-initialized epic is idempotent: the persisted
     // plan is the execution contract and is not rewritten unless reinitialization
     // was explicitly requested.
@@ -72426,8 +72112,7 @@ async function initializeEpic(input) {
             messages: validation.messages,
         };
     }
-    // Verify existence and resolve the node id of every planned issue.
-    const nodeIds = new Map();
+    // Verify that every planned issue exists in this repository.
     for (const issueNumber of intendedIssues) {
         const identity = await repository.getIssueIdentity(issueNumber);
         if (identity === null) {
@@ -72439,26 +72124,11 @@ async function initializeEpic(input) {
                 ],
             };
         }
-        nodeIds.set(issueNumber, identity.nodeId);
     }
-    // Read the native parent of every planned issue and calculate attach/reparent
-    // mutations.
-    const attach = [];
-    for (const issueNumber of intendedIssues) {
-        const parent = await repository.getParentEpicNumber(issueNumber);
-        if (parent === epicNumber) {
-            continue;
-        }
-        attach.push({ number: issueNumber, replaceParent: parent !== null });
-    }
-    // Calculate unexpected native sub-issues to remove under exact synchronization.
-    const nativeBefore = await repository.getNativeSubIssueNumbers(epicNumber);
-    const plannedSet = new Set(intendedIssues);
-    const unexpected = exactSync
-        ? nativeBefore.filter((number) => !plannedSet.has(number))
-        : [];
-    // Read canonical state and calculate normalization mutations. An unexpected
-    // active (in-progress) issue fails closed unless this is an explicit recovery.
+    // Read canonical state directly from the planned issue numbers and calculate
+    // normalization mutations. An unexpected active (in-progress) issue fails
+    // closed unless this is an explicit recovery. Native parent/child
+    // relationships are not required.
     const epicState = await repository.getEpicWithSubIssues(epicNumber, intendedIssues);
     if (epicState === null) {
         return {
@@ -72494,26 +72164,7 @@ async function initializeEpic(input) {
             stateChanges.push({ number: sub.number, label: desired });
         }
     }
-    // Determine whether native ordering already matches the plan (so an already
-    // ordered epic performs no reorder writes).
-    const expectedMembership = exactSync
-        ? intendedIssues
-        : [...intendedIssues, ...nativeBefore.filter((n) => !plannedSet.has(n))];
-    const orderMatches = attach.length === 0 &&
-        unexpected.length === 0 &&
-        initialize_epic_listsEqual(nativeBefore, expectedMembership);
     const details = [];
-    for (const item of attach) {
-        details.push(item.replaceParent
-            ? `Reparent issue #${item.number} to epic #${epicNumber}.`
-            : `Attach issue #${item.number} to epic #${epicNumber}.`);
-    }
-    for (const number of unexpected) {
-        details.push(`Remove unexpected native sub-issue #${number} from epic #${epicNumber}.`);
-    }
-    if (!orderMatches) {
-        details.push(`Reorder native sub-issues to match [${intendedIssues.join(', ')}].`);
-    }
     for (const change of stateChanges) {
         details.push(`Normalize issue #${change.number} to "${change.label}".`);
     }
@@ -72525,85 +72176,6 @@ async function initializeEpic(input) {
         });
         return { kind: 'dry-run', issues: [...intendedIssues], details };
     }
-    // Apply attach/reparent mutations, retrying transient transport failures.
-    for (const item of attach) {
-        const subId = nodeIds.get(item.number);
-        if (subId === undefined) {
-            continue;
-        }
-        const attached = await retryTransient(() => repository.addSubIssue(epicNumber, subId, item.replaceParent), policy, timing, (nextAttempt) => logger.info(`Feature Loop: add sub-issue retry ${nextAttempt}/${policy.maxAttempts}`, { epic: epicNumber, issue: item.number }));
-        if (!attached.ok) {
-            return {
-                kind: 'failed',
-                reason: 'initialization-failed',
-                messages: [retryExhaustedMessage(attached.error, policy)],
-            };
-        }
-        logger.info('Feature Loop: linked sub-issue to epic', {
-            epic: epicNumber,
-            issue: item.number,
-            reparented: item.replaceParent,
-        });
-    }
-    // Remove unexpected native sub-issues, retrying transient transport failures.
-    for (const number of unexpected) {
-        const identity = await repository.getIssueIdentity(number);
-        if (identity === null) {
-            continue;
-        }
-        const removed = await retryTransient(() => repository.removeSubIssue(epicNumber, identity.nodeId), policy, timing, (nextAttempt) => logger.info(`Feature Loop: remove sub-issue retry ${nextAttempt}/${policy.maxAttempts}`, { epic: epicNumber, issue: number }));
-        if (!removed.ok) {
-            return {
-                kind: 'failed',
-                reason: 'initialization-failed',
-                messages: [retryExhaustedMessage(removed.error, policy)],
-            };
-        }
-        logger.info('Feature Loop: removed unexpected native sub-issue', {
-            epic: epicNumber,
-            issue: number,
-        });
-    }
-    // After linking/removing, wait for the native hierarchy to converge before any
-    // reorder. Freshly linked relationships are eventually consistent: a reorder
-    // that references a sibling GitHub has not yet stabilized fails transiently.
-    if (attach.length > 0 || unexpected.length > 0) {
-        logger.info('Feature Loop: waiting for native hierarchy convergence', {
-            epic: epicNumber,
-        });
-        const convergence = await waitForMembership(hierarchy, (native) => {
-            const allVisible = intendedIssues.every((number) => native.includes(number));
-            const noUnexpected = exactSync
-                ? native.every((number) => plannedSet.has(number))
-                : true;
-            return allVisible && noUnexpected;
-        });
-        if (!convergence.ok) {
-            return {
-                kind: 'failed',
-                reason: 'initialization-failed',
-                messages: convergence.messages,
-            };
-        }
-        logger.info('Feature Loop: hierarchy membership visible', {
-            epic: epicNumber,
-        });
-    }
-    // Reorder native sub-issues to match the intended order. Each move reads the
-    // authoritative order, skips already-satisfied adjacency, sends one priority
-    // mutation, then polls the same surface until the move is verified.
-    for (let index = 1; index < intendedIssues.length; index += 1) {
-        const sub = intendedIssues[index];
-        const after = intendedIssues[index - 1];
-        const moved = await ensureAdjacency(hierarchy, { sub, after });
-        if (!moved.ok) {
-            return {
-                kind: 'failed',
-                reason: 'initialization-failed',
-                messages: moved.messages,
-            };
-        }
-    }
     // Apply canonical state normalization.
     for (const change of stateChanges) {
         await repository.setCanonicalState(change.number, change.label);
@@ -72612,26 +72184,8 @@ async function initializeEpic(input) {
             label: change.label,
         });
     }
-    // Re-read and verify the final native hierarchy before persisting the plan.
-    const nativeFinal = await repository.getNativeSubIssueNumbers(epicNumber);
-    const verified = exactSync
-        ? initialize_epic_listsEqual(nativeFinal, intendedIssues)
-        : intendedIssues.every((number) => nativeFinal.includes(number));
-    if (!verified) {
-        return {
-            kind: 'failed',
-            reason: 'initialization-failed',
-            messages: [
-                `Epic #${epicNumber} hierarchy verification failed after initialization. ` +
-                    `Expected [${intendedIssues.join(', ')}] but found [${nativeFinal.join(', ')}].`,
-            ],
-        };
-    }
-    logger.info('Feature Loop: verified native order', {
-        epic: epicNumber,
-        order: nativeFinal,
-    });
-    // Persist the frozen execution plan last.
+    // Persist the frozen execution plan last. The ordered Markdown list is the
+    // execution contract; the native hierarchy is never consulted.
     const plan = buildExecutionPlan(epicNumber, intendedIssues);
     await repository.upsertInitializationPlan(epicNumber, plan);
     logger.info('Feature Loop: epic initialized', {
@@ -72716,41 +72270,49 @@ async function preflight(input) {
     else if (!epic.open) {
         messages.push(`Epic #${input.epicNumber} is closed. Reopen it before running the loop.`);
     }
-    // Ordered sub-issues: resolve the controlling source.
-    let native = [];
-    let markdown = [];
-    let markdownDiscovery = 'none';
-    try {
-        native = await repository.getNativeSubIssueNumbers(input.epicNumber);
-    }
-    catch (error) {
-        return operationalError(error);
-    }
-    try {
-        const discovered = await repository.getMarkdownSubIssueNumbers(input.epicNumber, config.issues.markdown.heading);
-        markdown = discovered.numbers;
-        markdownDiscovery = discovered.source;
-    }
-    catch (error) {
-        if (error instanceof CrossRepositoryReferenceError ||
-            error instanceof MarkdownDiscoveryError) {
-            messages.push(error.message);
-        }
-        else {
-            return operationalError(error);
-        }
-    }
+    // Ordered sub-issues: resolve the controlling source. A continuation run with
+    // a frozen plan supplies its issues directly; the frozen plan is the sole
+    // execution-order source, so Markdown and the native sub-issue hierarchy are
+    // not reread.
     let source = 'native';
     let issues = [];
-    const resolution = resolveIssueSource(config.issues.source, native, markdown);
-    if (!resolution.ok) {
-        messages.push(resolution.message);
+    let markdownDiscovery = 'none';
+    if (input.plannedIssues !== undefined) {
+        issues = input.plannedIssues;
     }
     else {
-        source = resolution.source;
-        issues = resolution.issues;
-        if (issues.length === 0 && epic !== null) {
-            messages.push(`Epic #${input.epicNumber} has no ordered sub-issues for source "${config.issues.source}".`);
+        let native = [];
+        let markdown = [];
+        try {
+            native = await repository.getNativeSubIssueNumbers(input.epicNumber);
+        }
+        catch (error) {
+            return operationalError(error);
+        }
+        try {
+            const discovered = await repository.getMarkdownSubIssueNumbers(input.epicNumber, config.issues.markdown.heading);
+            markdown = discovered.numbers;
+            markdownDiscovery = discovered.source;
+        }
+        catch (error) {
+            if (error instanceof CrossRepositoryReferenceError ||
+                error instanceof MarkdownDiscoveryError) {
+                messages.push(error.message);
+            }
+            else {
+                return operationalError(error);
+            }
+        }
+        const resolution = resolveIssueSource(config.issues.source, native, markdown);
+        if (!resolution.ok) {
+            messages.push(resolution.message);
+        }
+        else {
+            source = resolution.source;
+            issues = resolution.issues;
+            if (issues.length === 0 && epic !== null) {
+                messages.push(`Epic #${input.epicNumber} has no ordered sub-issues for source "${config.issues.source}".`);
+            }
         }
     }
     // Configured base branch exists.
@@ -73032,7 +72594,6 @@ function epicStatusMarkerToken(epicNumber) {
 
 
 
-
 function controller_dedupe(values) {
     const seen = new Set();
     const result = [];
@@ -73105,6 +72666,9 @@ class Controller {
     epicNumber;
     issues;
     evaluation;
+    // The frozen execution plan for a continuation run, read before preflight so
+    // the loop never rereads Markdown on ordinary continuation runs.
+    frozenPlan = null;
     // Set when a trusted merged pull request completes a prior sub-issue.
     completedIssueNumber;
     // Details from epic initialization, surfaced on the final result.
@@ -73190,11 +72754,20 @@ class Controller {
             }
             this.epicNumber = epicNumber;
         }
+        // For a continuation run, load the frozen execution plan before preflight.
+        // The frozen plan is the sole execution-order source, so its issues are
+        // passed to preflight and Markdown is never reread on ordinary continuation
+        // runs. Manual dispatch and explicit force-reinitialize derive the order
+        // from Markdown instead.
+        if (resolved.kind !== 'manual') {
+            this.frozenPlan = await this.repository.getInitializationPlan(this.epicNumber);
+        }
         // 2. Repository preflight.
         const pre = await preflight({
             repository: this.repository,
             epicNumber: this.epicNumber,
             configPath: this.configPath,
+            plannedIssues: this.frozenPlan?.issues,
         });
         if (!pre.ok) {
             this.logger.warning('Feature Loop preflight failed', {
@@ -73248,9 +72821,10 @@ class Controller {
             };
         }
         // 2 (continued). Epic plan: a manual dispatch initializes (or verifies) the
-        // frozen execution plan; a continuation run reads the frozen plan and pauses
-        // on drift. Both establish the controlling ordered issue list before any
-        // epic read so the loop never re-resolves competing issue sources.
+        // frozen execution plan from the authored Markdown order; a continuation run
+        // loads the frozen plan and uses it directly. The frozen plan is the sole
+        // execution-order source, so the loop never re-resolves competing issue
+        // sources or consults the native sub-issue hierarchy.
         if (resolved.kind === 'manual') {
             const initialized = await this.initializeEpicPlan(pre.issues);
             if (initialized !== null) {
@@ -73291,7 +72865,6 @@ class Controller {
             epicNumber: this.epicNumber,
             intendedIssues,
             labels: this.labels,
-            exactSync: true,
             dryRun: this.dryRun,
             forceReinitialize: this.forceReinitialize,
         });
@@ -73333,40 +72906,25 @@ class Controller {
         }
     }
     /**
-     * Load the frozen execution plan for a continuation run and verify the native
-     * hierarchy has not drifted. Returns a terminal {@link OrchestratorResult}
-     * when the plan and native hierarchy differ (`plan-drift`); otherwise returns
-     * `null` after adopting the planned order, or leaves the preflight-resolved
-     * order in place when no plan has been persisted yet.
+     * Load the frozen execution plan for a continuation run. The frozen plan is
+     * the sole execution-order source: its ordered issues are adopted directly and
+     * never compared against the native sub-issue hierarchy. When no plan has been
+     * persisted yet, the preflight-resolved Markdown order is left in place as a
+     * documented backward-compatibility path; the native order is never adopted as
+     * a replacement plan.
      */
     async loadFrozenPlanForContinuation() {
-        const plan = await this.repository.getInitializationPlan(this.epicNumber);
+        const plan = this.frozenPlan;
         if (plan === null) {
-            // Backward compatible: an epic initialized before this feature continues
-            // on the preflight-resolved order.
+            // Backward compatible: an epic initialized before the frozen plan existed
+            // continues on the preflight-resolved Markdown order. The native sub-issue
+            // order is never adopted implicitly as a replacement plan.
             return null;
         }
+        // The frozen plan is the sole execution-order source. Continuation runs use
+        // its issues directly and never compare it against the native sub-issue
+        // hierarchy, which is presentation metadata only.
         this.issues = plan.issues;
-        const nativeOrder = await this.repository.getNativeSubIssueNumbers(this.epicNumber);
-        const drift = detectPlanDrift(plan, nativeOrder);
-        if (drift.drifted) {
-            const messages = [
-                drift.message,
-                'Reinitialize the epic with force-reinitialize to adopt the new hierarchy.',
-            ];
-            await this.postStatus(this.epicNumber, {
-                state: 'needs-human',
-                reason: 'plan-drift',
-                humanText: messages.join(' '),
-            });
-            return {
-                outcome: 'needs-human',
-                reasonCode: 'plan-drift',
-                dryRun: this.dryRun,
-                epicNumber: this.epicNumber,
-                details: messages,
-            };
-        }
         return null;
     }
     /**
