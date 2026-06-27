@@ -1,0 +1,52 @@
+# Reference consumer workflow: pinning a model (and the empty/default case).
+#
+# Copy into a repository as `.github/workflows/ci-triage.yml`. Demonstrates both
+# a HARDCODED `model` value and the EMPTY/default model.
+#
+# The `model` input is passed UNCHANGED to the Agent Tasks API. There is no
+# allowlist and NO SILENT FALLBACK: an invalid or unavailable model fails closed
+# as `configuration-error` / `agent-invalid-request`. Leave `model` empty to let
+# the API select its own default.
+name: CI Triage (model)
+
+on:
+  workflow_run:
+    workflows: ['CI']
+    types: [completed]
+
+concurrency:
+  group: ci-triage-${{ github.repository }}-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}
+  cancel-in-progress: false
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+
+jobs:
+  # Pin a specific model. Replace the value with a model your org/plan allows.
+  triage-pinned-model:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'failure' }}
+    steps:
+      - name: Triage with a hardcoded model
+        uses: lukeorellana/loop-engineering/actions/ci-triage@v1
+        with:
+          github-token: ${{ github.token }}
+          agent-token: ${{ secrets.CI_TRIAGE_AGENT_TOKEN }}
+          # Passed unchanged; may be rejected by GitHub or org policy.
+          model: 'gpt-5'
+
+  # Default model: omit `model` (or set it empty) to let the API choose.
+  triage-default-model:
+    # Disabled by default; enable instead of the pinned job if you prefer the
+    # API default. Shown here to document the empty/default case.
+    if: ${{ false }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Triage with the default model
+        uses: lukeorellana/loop-engineering/actions/ci-triage@v1
+        with:
+          github-token: ${{ github.token }}
+          agent-token: ${{ secrets.CI_TRIAGE_AGENT_TOKEN }}
+          # model omitted entirely -> no override is sent.

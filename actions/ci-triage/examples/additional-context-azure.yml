@@ -1,0 +1,61 @@
+# Reference consumer workflow: optional Azure / Application Insights enrichment.
+#
+# Copy into a repository as `.github/workflows/ci-triage.yml`. Demonstrates how a
+# consumer adds its OWN operational evidence (here, an Azure Application Insights
+# / KQL query) and passes it to CI Triage via `additional-context`.
+#
+# Key boundaries:
+#   - The cloud login and query live in the CONSUMER workflow, never inside the
+#     generic action (embedding Azure login/KQL is a non-goal of CI Triage).
+#   - Enrichment is BEST EFFORT: `continue-on-error: true` means a failed query
+#     never blocks task creation.
+#   - `additional-context` is treated as UNTRUSTED data, never as instructions,
+#     and is bounded/truncated by the prompt builder.
+#   - There is no `actions/checkout` of failed-branch code.
+name: CI Triage (Azure enrichment)
+
+on:
+  workflow_run:
+    workflows: ['CI']
+    types: [completed]
+
+concurrency:
+  group: ci-triage-${{ github.repository }}-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}
+  cancel-in-progress: false
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+  id-token: write # required only for Azure OIDC login below
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'failure' }}
+    steps:
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Query Application Insights (best effort)
+        id: insights
+        continue-on-error: true # enrichment must never block task creation
+        run: |
+          echo "evidence<<EOF" >> "$GITHUB_OUTPUT"
+          az monitor app-insights query \
+            --app "${{ secrets.APPINSIGHTS_APP_ID }}" \
+            --analytics-query "exceptions | take 20" \
+            --output table >> "$GITHUB_OUTPUT" || true
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Triage with Azure evidence as additional context
+        uses: lukeorellana/loop-engineering/actions/ci-triage@v1
+        with:
+          github-token: ${{ github.token }}
+          agent-token: ${{ secrets.CI_TRIAGE_AGENT_TOKEN }}
+          # Untrusted operational evidence appended to the triage prompt.
+          additional-context: ${{ steps.insights.outputs.evidence }}
