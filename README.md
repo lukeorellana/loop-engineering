@@ -11,9 +11,9 @@ running on top of GitHub and the Copilot agents.
 - [`actions/ci-triage`](actions/ci-triage) — triages a failed CI workflow run
   and hands it to the Copilot Agent Tasks API, opening or reusing a fix pull
   request.
-- [`.github/scripts/assign-copilot-agent.js`](.github/scripts/README.md) — a
-  lightweight workflow + script that assigns the Copilot coding agent to issues
-  labeled `agent: implement`.
+- [`actions/agent-assign`](actions/agent-assign) — assigns the Copilot coding
+  agent to issues labeled `agent: implement`, with suppression labels and
+  idempotent reruns.
 
 Each action is a self-contained Node 20 TypeScript action: TypeScript sources
 under `src/`, tests under `tests/`, and a committed `dist/index.js` bundle built
@@ -43,14 +43,15 @@ This repository uses a single, repository-wide release model:
 
 - **Git refs version the whole repository, not one action directory.** A tag such
   as `v1` (and immutable tags such as `v1.2.3`) versions everything under
-  `loop-engineering`, including both `actions/feature-loop` and
-  `actions/ci-triage`. Consumers reference an action and a repository ref
-  together, for example `lukeorellana/loop-engineering/actions/ci-triage@v1`.
+  `loop-engineering`, including `actions/feature-loop`,
+  `actions/ci-triage`, and `actions/agent-assign`. Consumers reference an
+  action and a repository ref together, for example
+  `lukeorellana/loop-engineering/actions/agent-assign@v1`.
 - **Every action must pass before a release is cut.** An immutable release tag is
   created — and the floating `v1` tag is moved to it — only after CI is green for
-  **both** action directories (install, type-check, lint, format, test, bundle,
-  committed-bundle drift, and smoke test). A failure in either action blocks the
-  release for both.
+  **all** action directories (install, type-check, lint, format, test, bundle,
+  committed-bundle drift, and smoke test). A failure in one action blocks the
+  release for all.
 - **Releases never start real Copilot Agent Tasks.** Normal CI and the release
   process exercise the actions only in modes that perform no Agent Tasks writes
   (for example, the CI Triage dry-run smoke test).

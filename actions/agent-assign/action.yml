@@ -1,0 +1,89 @@
+name: 'Agent Assign'
+description: 'Assign the GitHub Copilot coding agent to issues that opt in with a label.'
+author: 'lukeorellana'
+branding:
+  icon: 'user-check'
+  color: 'blue'
+inputs:
+  github-token:
+    description: >-
+      Token used for issue reads and label/comment updates. The workflow token is
+      sufficient for repository operations.
+    required: true
+    default: ${{ github.token }}
+  agent-token:
+    description: >-
+      Token used for Copilot assignment GraphQL operations. Defaults to
+      github-token when omitted.
+    required: false
+    default: ''
+  dry-run:
+    description: >-
+      When true, evaluate eligibility and report what would happen without
+      mutating issue labels, assignees, or comments.
+    required: false
+    default: 'false'
+  implement-label:
+    description: Label that opts an issue into Copilot assignment.
+    required: false
+    default: 'agent: implement'
+  queued-label:
+    description: Label applied before assignment starts.
+    required: false
+    default: 'agent: queued'
+  assigned-label:
+    description: Label applied after assignment succeeds.
+    required: false
+    default: 'agent: assigned'
+  failed-label:
+    description: Label applied when assignment fails.
+    required: false
+    default: 'agent: failed'
+  suppress-labels:
+    description: >-
+      Comma/newline-separated labels that suppress assignment. Empty resolves to
+      the safe defaults "agent: manual, agent: blocked".
+    required: false
+    default: 'agent: manual, agent: blocked'
+  copilot-logins:
+    description: >-
+      Comma/newline-separated Copilot actor logins to match, in preference order.
+    required: false
+    default: 'copilot-swe-agent, copilot'
+  replace-assignees:
+    description: >-
+      When true, replace assignees with only Copilot; when false, preserve
+      existing human assignees.
+    required: false
+    default: 'false'
+  post-instructions:
+    description: >-
+      When true, post the custom instructions comment exactly once before
+      assignment.
+    required: false
+    default: 'true'
+  custom-instructions:
+    description: >-
+      Instructions posted for Copilot when post-instructions is enabled.
+    required: false
+    default: ''
+  base-ref:
+    description: Optional preferred base branch hint included in instructions.
+    required: false
+    default: ''
+  model:
+    description: Optional model hint included in instructions.
+    required: false
+    default: ''
+outputs:
+  outcome:
+    description: >-
+      Coarse result: assigned, skipped, dry-run, configuration-error, or
+      operational-error.
+  reason:
+    description: Stable machine-readable reason code for the outcome.
+  issue-number:
+    description: The issue number acted on, when one was resolved from the event.
+runs:
+  using: 'node20'
+  main: 'dist/index.js'

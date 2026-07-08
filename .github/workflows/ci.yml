@@ -16,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        action: [feature-loop, ci-triage]
+        action: [feature-loop, ci-triage, agent-assign]
     defaults:
       run:
         working-directory: actions/${{ matrix.action }}
@@ -75,19 +75,9 @@ jobs:
           github-token: ${{ github.token }}
           agent-token: ${{ github.token }}
           dry-run: 'true'
-
-  scripts:
-    name: Repository scripts
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - name: Run Agent Assign action (dry run)
+        uses: ./actions/agent-assign
         with:
-          node-version: 20
-
-      - name: Test assign-copilot-agent script
-        run: node --test .github/scripts/assign-copilot-agent.test.js
-
+          github-token: ${{ github.token }}
+          agent-token: ${{ github.token }}
+          dry-run: 'true'
