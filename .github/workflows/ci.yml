@@ -16,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        action: [feature-loop, ci-triage]
+        action: [feature-loop, ci-triage, agent-assign]
     defaults:
       run:
         working-directory: actions/${{ matrix.action }}
@@ -71,6 +71,12 @@ jobs:
       # smoke test exercises the packaged action without any Agent Tasks writes.
       - name: Run CI Triage action (dry run)
         uses: ./actions/ci-triage
+        with:
+          github-token: ${{ github.token }}
+          agent-token: ${{ github.token }}
+          dry-run: 'true'
+      - name: Run Agent Assign action (dry run)
+        uses: ./actions/agent-assign
         with:
           github-token: ${{ github.token }}
           agent-token: ${{ github.token }}

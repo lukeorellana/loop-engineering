@@ -1,0 +1,38 @@
+name: Assign Copilot agent
+
+on:
+  issues:
+    types: [opened, reopened, labeled]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  assign-copilot:
+    if: "${{ github.event_name != 'issues' || github.event.action != 'labeled' || github.event.label.name == 'agent: implement' }}"
+    runs-on: ubuntu-latest
+    concurrency:
+      group: agent-assign-${{ github.repository }}-${{ github.event.issue.number || 'none' }}
+      cancel-in-progress: false
+    steps:
+      - name: Assign Copilot coding agent
+        id: assign
+        uses: lukeorellana/loop-engineering/actions/agent-assign@v1
+        with:
+          github-token: ${{ github.token }}
+          agent-token: ${{ secrets.COPILOT_ASSIGN_TOKEN }}
+          implement-label: 'agent: implement'
+          suppress-labels: |
+            agent: manual
+            agent: blocked
+          post-instructions: 'true'
+          custom-instructions: |
+            Implement the issue with the smallest safe change.
+            Keep tests updated.
+
+      - name: Log result
+        run: |
+          echo "outcome=${{ steps.assign.outputs.outcome }}"
+          echo "reason=${{ steps.assign.outputs.reason }}"
+          echo "issue=${{ steps.assign.outputs['issue-number'] }}"
