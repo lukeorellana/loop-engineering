@@ -1,0 +1,61 @@
+name: Assign Copilot Agent
+
+# Assign the GitHub Copilot coding agent to issues that opt into agentic
+# implementation via the `agent: implement` label. See
+# .github/scripts/README.md for setup, labels, permissions, and limitations.
+
+on:
+  issues:
+    types: [opened, reopened, labeled]
+
+# Never assign more than once concurrently for the same issue; queue re-runs so
+# the fresh-read + assign flow stays idempotent under rapid label changes.
+concurrency:
+  group: agent-assign-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  assign:
+    name: Assign Copilot to labeled issue
+    runs-on: ubuntu-latest
+    # Cheap pre-filter so the job body only runs for the labeled event when the
+    # relevant label was added, and for opened/reopened events. The script
+    # re-reads issue state and enforces every rule authoritatively.
+    if: >-
+      github.event.action != 'labeled' ||
+      github.event.label.name == 'agent: implement'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify assignment token is configured
+        env:
+          COPILOT_ASSIGN_TOKEN: ${{ secrets.COPILOT_ASSIGN_TOKEN }}
+        run: |
+          if [ -z "${COPILOT_ASSIGN_TOKEN}" ]; then
+            echo "::error::COPILOT_ASSIGN_TOKEN secret is not set. See .github/scripts/README.md for setup."
+            exit 1
+          fi
+
+      - name: Assign Copilot agent
+        uses: actions/github-script@v7
+        env:
+          COPILOT_ASSIGN_TOKEN: ${{ secrets.COPILOT_ASSIGN_TOKEN }}
+          # Optional overrides — safe to leave unset to use the documented
+          # defaults. Set DRY_RUN to 'true' to exercise the workflow without
+          # assigning Copilot.
+          DRY_RUN: ${{ vars.AGENT_ASSIGN_DRY_RUN }}
+          IMPLEMENT_LABEL: ${{ vars.AGENT_ASSIGN_IMPLEMENT_LABEL }}
+          SUPPRESS_LABELS: ${{ vars.AGENT_ASSIGN_SUPPRESS_LABELS }}
+          POST_INSTRUCTIONS: ${{ vars.AGENT_ASSIGN_POST_INSTRUCTIONS }}
+          CUSTOM_INSTRUCTIONS: ${{ vars.AGENT_ASSIGN_CUSTOM_INSTRUCTIONS }}
+          REPLACE_ASSIGNEES: ${{ vars.AGENT_ASSIGN_REPLACE_ASSIGNEES }}
+        with:
+          github-token: ${{ secrets.COPILOT_ASSIGN_TOKEN }}
+          script: |
+            const { run } = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/assign-copilot-agent.js`);
+            await run({ github, context, core, env: process.env });

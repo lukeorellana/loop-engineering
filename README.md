@@ -11,6 +11,9 @@ running on top of GitHub and the Copilot agents.
 - [`actions/ci-triage`](actions/ci-triage) — triages a failed CI workflow run
   and hands it to the Copilot Agent Tasks API, opening or reusing a fix pull
   request.
+- [`.github/scripts/assign-copilot-agent.js`](.github/scripts/README.md) — a
+  lightweight workflow + script that assigns the Copilot coding agent to issues
+  labeled `agent: implement`.
 
 Each action is a self-contained Node 20 TypeScript action: TypeScript sources
 under `src/`, tests under `tests/`, and a committed `dist/index.js` bundle built
