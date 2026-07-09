@@ -3,3 +3,8 @@ lib/
 coverage/
 *.log
 .DS_Store
+
+# Vendored Copilot agent skills bundle their own helper libraries; the generic
+# lib/ ignore above must not drop these tracked skill assets.
+!.github/skills/**/lib/
+!.github/skills/**/lib/**
