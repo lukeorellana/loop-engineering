@@ -90,6 +90,20 @@ are grouped by the stage that emits them.
 | `existing-mode-requires-pull-request` | `needs-human` | `existing` mode was requested for a push-triggered run with no pull request to reuse. |
 | `target-branch-not-found`             | `needs-human` | The branch the fix would target no longer exists (or the run targeted a tag).         |
 
+### Resolved-target policy
+
+| Reason              | Outcome       | Meaning                                                              |
+| ------------------- | ------------- | -------------------------------------------------------------------- |
+| `qr-target-refused` | `needs-human` | The resolved MVF QR target is protected; no Agent Tasks call occurs. |
+
+After normal selection and stale-run checks, the action refuses the exact
+`feature/intake-qr-303` target in `lukeorellana/mvfprojectunleashed`. For an
+existing PR this is its head ref; for a new or stacked PR it is the target base
+ref. The repository name is case-insensitive, while the ref is case-sensitive.
+The decision uses the resolved target, not the failed run's original branch, and
+also applies to dry runs. It is unconditional: there is no policy input or
+disable switch. Other repository/target combinations are unaffected.
+
 ### Agent Tasks provider (Copilot Agent Tasks API boundary)
 
 | Reason                      | Outcome               | Meaning                                                                                       |

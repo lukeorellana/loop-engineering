@@ -60598,6 +60598,8 @@ const PULL_REQUEST_MODES = ['auto', 'existing', 'new'];
  *   (or the run targeted a tag), so there is nothing to write to (needs-human).
  * - `stale-workflow-run`: the pull request or branch advanced past the failed
  *   run's head SHA, so the failure is no longer current (ignored).
+ * - `qr-target-refused`: the resolved QR target is protected from triage
+ *   (needs-human).
  */
 const TRIAGE_REASON_CODES = (/* unused pure expression or super */ null && ([
     'invalid-input',
@@ -60629,6 +60631,7 @@ const TRIAGE_REASON_CODES = (/* unused pure expression or super */ null && ([
     'existing-mode-requires-pull-request',
     'target-branch-not-found',
     'stale-workflow-run',
+    'qr-target-refused',
 ]));
 
 ;// CONCATENATED MODULE: ./src/domain/prompt.ts
@@ -62330,6 +62333,22 @@ async function orchestrate(env, inputs) {
             dryRun: inputs.dryRun,
             ...metadataFields(resolution.metadata),
             details: [`Triage paused for human attention: ${resolution.reason}.`],
+        };
+    }
+    const targetRef = resolution.action === 'update-existing-pull-request'
+        ? resolution.targetHeadRef
+        : resolution.targetBaseRef;
+    if (env.repository.toLowerCase() === 'lukeorellana/mvfprojectunleashed' &&
+        targetRef === 'feature/intake-qr-303') {
+        return {
+            outcome: 'needs-human',
+            reasonCode: 'qr-target-refused',
+            dryRun: inputs.dryRun,
+            ...metadataFields(resolution.metadata),
+            ...targetFields(resolution),
+            details: [
+                'Triage refused for the protected QR target; no task was started.',
+            ],
         };
     }
     // A delivery target was resolved. The fingerprint is a pure function of the

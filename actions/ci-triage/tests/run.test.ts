@@ -92,6 +92,7 @@ interface RunOptions {
   readonly event?: TriageEvent;
   readonly api?: TriageGitHubApi;
   readonly provider?: AgentTasksProvider;
+  readonly repository?: string;
 }
 
 async function run(options: RunOptions = {}): Promise<{
@@ -105,7 +106,7 @@ async function run(options: RunOptions = {}): Promise<{
     new FakeAgentTasksProvider();
   const env: ActionEnvironment = {
     core,
-    repository: 'acme/app',
+    repository: options.repository ?? 'acme/app',
     event: options.event ?? COMPLETED_EVENT,
     buildTriageApi: () => options.api ?? existingPrApi(),
     buildAgentTasksProvider: () => provider,
@@ -113,6 +114,172 @@ async function run(options: RunOptions = {}): Promise<{
   const result = await executeAction(env);
   return { core, result, provider };
 }
+
+describe('executeAction — resolved QR target policy', () => {
+  it('refuses the direct resolved QR target before accessing Agent Tasks', async () => {
+    const branch = 'feature/intake-qr-303';
+    const api = new FakeTriageGitHubApi({
+      workflowRuns: { [RUN_ID]: makeRun({ headBranch: branch }) },
+      pullRequests: { 7: makePr({ headRef: branch }) },
+    });
+    const { core, result, provider } = await run({
+      repository: 'lukeorellana/mvfprojectunleashed',
+      api,
+    });
+
+    expect(result.outcome).toBe('needs-human');
+    expect(result.reasonCode).toBe('qr-target-refused');
+    expect(result.targetHeadRef).toBe(branch);
+    expect(core.outputs['task-id']).toBe('');
+    expect(core.failed).toBeNull();
+    expect(provider.findFingerprints).toHaveLength(0);
+    expect(provider.inputs).toHaveLength(0);
+  });
+
+  it('refuses a shared-SHA QR resolution from a different failed branch', async () => {
+    const api = new FakeTriageGitHubApi({
+      workflowRuns: {
+        [RUN_ID]: makeRun({
+          headBranch: 'feature/fork-other',
+          pullRequestNumbers: [],
+        }),
+      },
+      pullRequestsForCommit: {
+        [HEAD_SHA]: [
+          makePr({ number: 901, headRef: 'feature/fork-other', isFork: true }),
+          makePr({ number: 303, headRef: 'feature/intake-qr-303' }),
+        ],
+      },
+    });
+    const { core, result, provider } = await run({
+      repository: 'lukeorellana/mvfprojectunleashed',
+      api,
+    });
+
+    expect(api.calls.map((call) => call.op)).toEqual([
+      'getWorkflowRun',
+      'listPullRequestsForCommit',
+    ]);
+    expect(result.outcome).toBe('needs-human');
+    expect(result.reasonCode).toBe('qr-target-refused');
+    expect(core.outputs['target-head-ref']).toBe('feature/intake-qr-303');
+    expect(core.outputs['existing-pr-number']).toBe('303');
+    expect(provider.findFingerprints).toHaveLength(0);
+    expect(provider.inputs).toHaveLength(0);
+  });
+
+  it.each(['pull_request', 'push'] as const)(
+    'refuses a new-PR target based on the QR branch for %s runs',
+    async (event) => {
+      const branch = 'feature/intake-qr-303';
+      const api = new FakeTriageGitHubApi({
+        workflowRuns: {
+          [RUN_ID]: makeRun({
+            event,
+            headBranch: branch,
+            pullRequestNumbers: event === 'push' ? [] : [7],
+          }),
+        },
+        pullRequests: { 7: makePr({ headRef: branch }) },
+        branchHeads: { [branch]: HEAD_SHA },
+      });
+      const { result, provider } = await run({
+        repository: 'LukeOrellana/MVFProjectUnleashed',
+        inputs: { 'pull-request-mode': 'new' },
+        api,
+      });
+
+      expect(result.outcome).toBe('needs-human');
+      expect(result.reasonCode).toBe('qr-target-refused');
+      expect(result.targetBaseRef).toBe(branch);
+      expect(provider.inputs).toHaveLength(0);
+      expect(provider.findFingerprints).toHaveLength(0);
+    },
+  );
+
+  it.each([
+    ['lukeorellana/mvfprojectunleashed', 'feature/ordinary'],
+    ['lukeorellana/mvfprojectunleashed', 'feature/intake-qr-303-extra'],
+    ['lukeorellana/mvfprojectunleashed', 'feature/Intake-qr-303'],
+    ['other/project', 'feature/intake-qr-303'],
+  ])('starts an unrelated target in %s on %s', async (repository, branch) => {
+    const api = new FakeTriageGitHubApi({
+      workflowRuns: { [RUN_ID]: makeRun({ headBranch: branch }) },
+      pullRequests: { 7: makePr({ headRef: branch }) },
+    });
+    const { result, provider } = await run({ repository, api });
+
+    expect(result.outcome).toBe('started');
+    expect(provider.inputs).toHaveLength(1);
+    expect(provider.inputs[0].headRef).toBe(branch);
+  });
+
+  it('does not refuse an existing PR merely based on the QR branch', async () => {
+    const api = new FakeTriageGitHubApi({
+      workflowRuns: { [RUN_ID]: makeRun() },
+      pullRequests: { 7: makePr({ baseRef: 'feature/intake-qr-303' }) },
+    });
+    const { result, provider } = await run({
+      repository: 'lukeorellana/mvfprojectunleashed',
+      api,
+    });
+
+    expect(result.outcome).toBe('started');
+    expect(provider.inputs[0].headRef).toBe(HEAD_BRANCH);
+  });
+
+  it('reports the refusal in dry run without accessing Agent Tasks', async () => {
+    const branch = 'feature/intake-qr-303';
+    const api = new FakeTriageGitHubApi({
+      workflowRuns: { [RUN_ID]: makeRun({ headBranch: branch }) },
+      pullRequests: { 7: makePr({ headRef: branch }) },
+    });
+    const { core, result, provider } = await run({
+      repository: 'lukeorellana/mvfprojectunleashed',
+      inputs: { 'dry-run': 'true' },
+      api,
+    });
+
+    expect(result.outcome).toBe('needs-human');
+    expect(result.reasonCode).toBe('qr-target-refused');
+    expect(result.dryRun).toBe(true);
+    expect(Object.keys(core.outputs)).toEqual([...ACTION_OUTPUT_NAMES]);
+    expect(core.outputs['task-id']).toBe('');
+    expect(provider.findFingerprints).toHaveLength(0);
+    expect(provider.inputs).toHaveLength(0);
+  });
+
+  it.each([
+    [
+      makePr({ headRef: 'feature/intake-qr-303', isFork: true }),
+      'needs-human',
+      'fork-pull-request',
+    ],
+    [
+      makePr({ headRef: 'feature/intake-qr-303', headSha: 'b'.repeat(40) }),
+      'ignored',
+      'stale-workflow-run',
+    ],
+  ] as const)(
+    'preserves resolver protection before evaluating the QR policy',
+    async (pullRequest, outcome, reason) => {
+      const api = new FakeTriageGitHubApi({
+        workflowRuns: {
+          [RUN_ID]: makeRun({ headBranch: 'feature/intake-qr-303' }),
+        },
+        pullRequests: { 7: pullRequest },
+      });
+      const { result, provider } = await run({
+        repository: 'lukeorellana/mvfprojectunleashed',
+        api,
+      });
+
+      expect(result.outcome).toBe(outcome);
+      expect(result.reasonCode).toBe(reason);
+      expect(provider.inputs).toHaveLength(0);
+    },
+  );
+});
 
 describe('executeAction — outputs contract', () => {
   it('sets all ten outputs on every normal exit path', async () => {

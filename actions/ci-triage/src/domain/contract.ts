@@ -127,6 +127,8 @@ export type PullRequestMode = (typeof PULL_REQUEST_MODES)[number];
  *   (or the run targeted a tag), so there is nothing to write to (needs-human).
  * - `stale-workflow-run`: the pull request or branch advanced past the failed
  *   run's head SHA, so the failure is no longer current (ignored).
+ * - `qr-target-refused`: the resolved QR target is protected from triage
+ *   (needs-human).
  */
 export const TRIAGE_REASON_CODES = [
   'invalid-input',
@@ -158,6 +160,7 @@ export const TRIAGE_REASON_CODES = [
   'existing-mode-requires-pull-request',
   'target-branch-not-found',
   'stale-workflow-run',
+  'qr-target-refused',
 ] as const;
 
 export type TriageReasonCode = (typeof TRIAGE_REASON_CODES)[number];

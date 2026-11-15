@@ -233,6 +233,26 @@ async function orchestrate(
     };
   }
 
+  const targetRef =
+    resolution.action === 'update-existing-pull-request'
+      ? resolution.targetHeadRef
+      : resolution.targetBaseRef;
+  if (
+    env.repository.toLowerCase() === 'lukeorellana/mvfprojectunleashed' &&
+    targetRef === 'feature/intake-qr-303'
+  ) {
+    return {
+      outcome: 'needs-human',
+      reasonCode: 'qr-target-refused',
+      dryRun: inputs.dryRun,
+      ...metadataFields(resolution.metadata),
+      ...targetFields(resolution),
+      details: [
+        'Triage refused for the protected QR target; no task was started.',
+      ],
+    };
+  }
+
   // A delivery target was resolved. The fingerprint is a pure function of the
   // run identity and target, independent of any optional history or evidence, so
   // it is stable for the same run attempt and changes for a new attempt.

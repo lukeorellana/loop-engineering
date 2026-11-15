@@ -68,6 +68,7 @@ failed workflow to re-trigger triage:
 | `pull-request-ambiguous`              | Multiple open same-repository PRs matched the head branch/SHA.    | Close or retarget duplicates so exactly one open PR matches.                       |
 | `pull-request-closed`                 | The only matching pull request is closed.                         | Reopen it, or switch to `new` mode to open a fresh remediation PR.                 |
 | `fork-pull-request`                   | The matching pull request originates from a fork.                 | Expected and intentional — triage never targets fork branches. Fix forks manually. |
+| `qr-target-refused`                   | The resolved MVF QR target is protected.                          | Expected — no Agent Tasks call was made; review the target with a human.           |
 | `existing-mode-requires-pull-request` | `existing` mode on a push failure with no PR to reuse.            | Use `auto` or `new` mode for push-triggered failures.                              |
 | `target-branch-not-found`             | The branch the fix would target no longer exists (or it's a tag). | The branch was deleted or the run targeted a tag; nothing to write to.             |
 
