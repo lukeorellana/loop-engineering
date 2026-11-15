@@ -61,6 +61,13 @@ A new repository can adopt CI Triage from these guides and the
 Boolean inputs accept only `true` or `false` (case-insensitive); any other value
 is rejected as a configuration error.
 
+After target resolution, CI Triage refuses `feature/intake-qr-303` in
+`lukeorellana/mvfprojectunleashed` with `needs-human` / `qr-target-refused`.
+The protected ref is the existing PR head or the base of a new remediation PR.
+This applies even when a different failed branch shares the selected PR's SHA,
+and in dry runs; no Agent Tasks calls are made. This fixed policy has no input
+or disable switch and does not apply to other repository/target combinations.
+
 ## Outputs
 
 Every normal result path sets all outputs; values that do not apply are emitted
